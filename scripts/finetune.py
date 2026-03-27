@@ -25,6 +25,7 @@ if __package__ in {None, ""}:
 from src.data.loader import ManifestDataset
 from src.data.schema import SplitName
 from src.model.alignment import VocabularyActionAligner, align_manifest_sample
+from src.train.runner import run_train_stub_steps
 
 
 def _normalized_mapping(raw: Mapping[str, Any]) -> dict[str, str]:
@@ -186,18 +187,13 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not config.dry_run:
-        step_metrics: list[dict[str, float | int]] = []
-        base_loss = 1.0 + unknown_ratio
         known_ratio = 1.0 - unknown_ratio if total_action_labels > 0 else 1.0
-        for step_idx in range(config.train_steps):
-            step = step_idx + 1
-            step_metrics.append(
-                {
-                    "step": step,
-                    "loss": base_loss / float(step),
-                    "known_ratio": known_ratio,
-                }
-            )
+        step_results = run_train_stub_steps(
+            train_steps=config.train_steps,
+            known_ratio=known_ratio,
+            unknown_ratio=unknown_ratio,
+            processed_samples=processed_samples,
+        )
 
         checkpoint_payload = {
             "mode": "train_stub",
@@ -217,7 +213,7 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
             "unknown_action_labels": unknown_action_labels,
             "unknown_ratio": unknown_ratio,
             "train_steps": config.train_steps,
-            "step_metrics": step_metrics,
+            "step_metrics": [result.to_dict() for result in step_results],
             "note": "placeholder training metadata; optimization loop not implemented",
         }
         with training_metadata_path.open("w", encoding="utf-8") as fp:

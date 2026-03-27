@@ -159,6 +159,7 @@ def test_run_finetune_training_skeleton_writes_artifacts(tmp_path: Path) -> None
     assert len(training_payload["step_metrics"]) == 3
     assert training_payload["step_metrics"][0]["step"] == 1
     assert training_payload["step_metrics"][-1]["step"] == 3
+    assert training_payload["step_metrics"][0]["samples_seen"] == report["processed_samples"]
 
 
 def test_load_config_supports_inline_mapping_and_aliases(tmp_path: Path) -> None:

@@ -6,17 +6,19 @@ The scope is intentionally narrow: define a clean data contract and reproducible
 
 ## Current Stage
 
-Stage 2 has started with a minimal action-alignment module:
+Stage 3 fine-tuning entry has started with config-driven dry-run and train-stub flows:
 
-- Alignment interface and baseline vocabulary mapper
-- Unknown-action fallback behavior
-- Unit tests for mapping and confidence validation
+- Manifest loading and action-alignment integration
+- Deterministic dry-run and train-stub artifact contracts
+- Train-step runner abstraction (`src/train/runner.py`) for staged training-loop evolution
 
 ## Project Structure
 
 - `docs/` - planning and data specifications
 - `scripts/` - CLI scripts runnable from repo root
 - `src/data/` - data contracts and validation schemas
+- `src/model/` - action alignment and mapping modules
+- `src/train/` - training runner abstractions
 - `tests/` - unit tests
 
 ## Quick Start
