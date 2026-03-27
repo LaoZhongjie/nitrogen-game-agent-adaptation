@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
 from src.data.schema import SplitName
 from src.eval.metrics import EvaluationRecord, EvaluationSummary, SplitEvaluationMetrics, evaluate_records
