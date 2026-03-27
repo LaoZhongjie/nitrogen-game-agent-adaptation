@@ -133,10 +133,7 @@ def load_config(config_path: Path, dry_run_override: bool | None = None) -> Fine
 
 
 def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
-    """Run fine-tuning entry flow; currently dry-run only."""
-    if not config.dry_run:
-        raise NotImplementedError("Training loop is not implemented yet. Run with dry_run=true.")
-
+    """Run fine-tuning entry flow with dry-run and train-stub modes."""
     dataset = ManifestDataset(config.manifest_path, split=config.split)
     aligner = VocabularyActionAligner(
         mapping=config.action_mapping,
@@ -160,10 +157,12 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
     output_dir = Path(config.output_dir)
     checkpoint_path = output_dir / "checkpoints" / "latest.ckpt"
     metrics_path = output_dir / "metrics" / "latest_metrics.json"
+    training_metadata_path = output_dir / "metrics" / "training_metadata.json"
     unknown_ratio = (unknown_action_labels / float(total_action_labels)) if total_action_labels > 0 else 0.0
 
+    mode = "dry_run" if config.dry_run else "train_stub"
     summary = {
-        "mode": "dry_run",
+        "mode": mode,
         "manifest_path": config.manifest_path,
         "output_dir": str(output_dir),
         "split": None if config.split is None else config.split.value,
@@ -173,10 +172,38 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
         "unknown_ratio": unknown_ratio,
         "checkpoint_path": str(checkpoint_path),
         "metrics_path": str(metrics_path),
+        "training_metadata_path": str(training_metadata_path),
         "seed": config.seed,
     }
+
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not config.dry_run:
+        checkpoint_payload = {
+            "mode": "train_stub",
+            "seed": config.seed,
+            "processed_samples": processed_samples,
+            "note": "placeholder checkpoint artifact; optimization loop not implemented",
+        }
+        with checkpoint_path.open("w", encoding="utf-8") as fp:
+            json.dump(checkpoint_payload, fp, indent=2)
+            fp.write("\n")
+
+        training_metadata = {
+            "mode": "train_stub",
+            "seed": config.seed,
+            "processed_samples": processed_samples,
+            "total_action_labels": total_action_labels,
+            "unknown_action_labels": unknown_action_labels,
+            "unknown_ratio": unknown_ratio,
+            "note": "placeholder training metadata; optimization loop not implemented",
+        }
+        with training_metadata_path.open("w", encoding="utf-8") as fp:
+            json.dump(training_metadata, fp, indent=2)
+            fp.write("\n")
+
     if config.save_summary:
-        metrics_path.parent.mkdir(parents=True, exist_ok=True)
         with metrics_path.open("w", encoding="utf-8") as fp:
             json.dump(summary, fp, indent=2)
             fp.write("\n")
