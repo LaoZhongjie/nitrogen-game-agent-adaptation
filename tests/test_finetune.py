@@ -248,6 +248,7 @@ def test_run_finetune_train_mock_backend_writes_nontrivial_steps(tmp_path: Path)
 
     assert report["mode"] == "train_mock"
     assert report["runner_backend"] == "train_mock"
+    assert report["mock_learning_rate"] == 0.2
 
     training_metadata_path = Path(report["training_metadata_path"])
     training_payload = json.loads(training_metadata_path.read_text(encoding="utf-8"))

@@ -184,7 +184,6 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
         "output_dir": str(output_dir),
         "split": None if config.split is None else config.split.value,
         "train_steps": config.train_steps,
-        "runner_backend": config.runner_backend,
         "mock_learning_rate": config.mock_learning_rate,
         "processed_samples": processed_samples,
         "total_action_labels": total_action_labels,
