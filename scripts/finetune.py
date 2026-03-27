@@ -54,6 +54,7 @@ class FineTuneConfig:
     output_dir: str
     split: SplitName | None = None
     max_samples: int | None = None
+    train_steps: int = 1
     dry_run: bool = True
     save_summary: bool = True
     action_mapping: Mapping[str, str] = field(default_factory=dict)
@@ -69,6 +70,8 @@ class FineTuneConfig:
             raise ValueError("output_dir must be non-empty.")
         if self.max_samples is not None and self.max_samples <= 0:
             raise ValueError("max_samples must be > 0 when provided.")
+        if self.train_steps <= 0:
+            raise ValueError("train_steps must be > 0.")
         if not self.unknown_action_id.strip():
             raise ValueError("unknown_action_id must be non-empty.")
         if not 0.0 <= self.confidence_floor <= 1.0:
@@ -107,6 +110,7 @@ def load_config(config_path: Path, dry_run_override: bool | None = None) -> Fine
         output_dir=str(raw["output_dir"]),
         split=split,
         max_samples=int(raw["max_samples"]) if raw.get("max_samples") is not None else None,
+        train_steps=int(raw.get("train_steps", 1)),
         dry_run=bool(raw.get("dry_run", True)),
         save_summary=bool(raw.get("save_summary", True)),
         action_mapping=mapping,
@@ -121,6 +125,7 @@ def load_config(config_path: Path, dry_run_override: bool | None = None) -> Fine
             output_dir=config.output_dir,
             split=config.split,
             max_samples=config.max_samples,
+            train_steps=config.train_steps,
             dry_run=dry_run_override,
             save_summary=config.save_summary,
             action_mapping=config.action_mapping,
@@ -166,6 +171,7 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
         "manifest_path": config.manifest_path,
         "output_dir": str(output_dir),
         "split": None if config.split is None else config.split.value,
+        "train_steps": config.train_steps,
         "processed_samples": processed_samples,
         "total_action_labels": total_action_labels,
         "unknown_action_labels": unknown_action_labels,
@@ -180,6 +186,19 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not config.dry_run:
+        step_metrics: list[dict[str, float | int]] = []
+        base_loss = 1.0 + unknown_ratio
+        known_ratio = 1.0 - unknown_ratio if total_action_labels > 0 else 1.0
+        for step_idx in range(config.train_steps):
+            step = step_idx + 1
+            step_metrics.append(
+                {
+                    "step": step,
+                    "loss": base_loss / float(step),
+                    "known_ratio": known_ratio,
+                }
+            )
+
         checkpoint_payload = {
             "mode": "train_stub",
             "seed": config.seed,
@@ -197,6 +216,8 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
             "total_action_labels": total_action_labels,
             "unknown_action_labels": unknown_action_labels,
             "unknown_ratio": unknown_ratio,
+            "train_steps": config.train_steps,
+            "step_metrics": step_metrics,
             "note": "placeholder training metadata; optimization loop not implemented",
         }
         with training_metadata_path.open("w", encoding="utf-8") as fp:

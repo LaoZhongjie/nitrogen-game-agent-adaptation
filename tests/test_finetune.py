@@ -131,6 +131,7 @@ def test_run_finetune_training_skeleton_writes_artifacts(tmp_path: Path) -> None
         action_mapping={"jump": "jump"},
         dry_run=False,
         save_summary=True,
+        train_steps=3,
         seed=11,
     )
     report = run_finetune(cfg)
@@ -150,6 +151,14 @@ def test_run_finetune_training_skeleton_writes_artifacts(tmp_path: Path) -> None
     assert checkpoint_payload["seed"] == 11
     assert metrics_payload["mode"] == "train_stub"
     assert metrics_payload["processed_samples"] == report["processed_samples"]
+
+    training_metadata_path = Path(report["training_metadata_path"])
+    assert training_metadata_path.exists()
+    training_payload = json.loads(training_metadata_path.read_text(encoding="utf-8"))
+    assert training_payload["train_steps"] == 3
+    assert len(training_payload["step_metrics"]) == 3
+    assert training_payload["step_metrics"][0]["step"] == 1
+    assert training_payload["step_metrics"][-1]["step"] == 3
 
 
 def test_load_config_supports_inline_mapping_and_aliases(tmp_path: Path) -> None:

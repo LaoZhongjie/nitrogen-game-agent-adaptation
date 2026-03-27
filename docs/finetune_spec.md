@@ -33,6 +33,7 @@ Optional:
 - `unknown_action_id` (`str`, default `"unknown"`)
 - `confidence_floor` (`float`, default `0.0`)
 - `seed` (`int`, default `0`)
+- `train_steps` (`int`, default `1`): pseudo training steps in `train_stub` mode
 
 Normalization behavior:
 
@@ -61,6 +62,13 @@ In `train_stub` mode (`dry_run=false`), placeholder artifacts are also written:
 
 - `output_dir/checkpoints/latest.ckpt`
 - `output_dir/metrics/training_metadata.json`
+
+`training_metadata.json` includes deterministic `steps` entries:
+
+- `step` (1-indexed integer)
+- `samples_seen` (constant per step from dry-run pass)
+- `unknown_ratio` (constant per step from dry-run pass)
+- `pseudo_loss` (deterministic value: `1.0 / (step + seed)` )
 
 ## Current limitation
 
