@@ -9,9 +9,11 @@ The Stage 3 starter currently supports:
 - config-driven execution from a JSON file
 - dataset loading via `ManifestDataset`
 - action alignment integration via `VocabularyActionAligner`
-- two execution modes:
+- execution modes:
   - `dry_run`: validation-only summary path
   - `train_stub`: placeholder non-dry-run artifact path (no optimization loop yet)
+  - `train_noop`: deterministic zero-loss placeholder path
+  - `train_mock`: deterministic non-trivial loss path with serialized `TrainingState`
 
 ## Config schema
 
@@ -46,7 +48,7 @@ Normalization behavior:
 
 Returned summary fields include:
 
-- `mode` (`"dry_run"` or `"train_stub"`)
+- `mode` (`"dry_run"` or configured backend name)
 - `processed_samples`
 - `total_action_labels`
 - `unknown_action_labels`
@@ -79,6 +81,15 @@ In non-dry-run backend modes (`dry_run=false`), placeholder artifacts are also w
   - `backend` (`str`)
   - `step_count` (`int`)
   - `state_digest` (`str`): deterministic digest-like token for backend state snapshot
+- `state` (`dict`, only when `mode="train_mock"`): serialized `TrainingState` payload:
+  - `schema` (`str`, current `"training_state_v1"`)
+  - `backend` (`str`)
+  - `train_steps` (`int`)
+  - `latest_step` (`int`)
+  - `latest_loss` (`float`)
+  - `known_ratio` (`float`)
+  - `samples_seen` (`int`)
+  - `mock_learning_rate` (`float`)
 
 
 `training_metadata.json` includes deterministic `step_metrics` entries and backend metadata:

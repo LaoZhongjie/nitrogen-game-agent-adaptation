@@ -11,6 +11,7 @@ Stage 3 fine-tuning entry has started with config-driven dry-run and pluggable t
 - Manifest loading and action-alignment integration
 - Deterministic dry-run / `train_stub` / `train_noop` / `train_mock` artifact contracts
 - Train-step runner abstraction (`src/train/runner.py`) with injectable runner-factory path for staged training-loop evolution
+- Versioned mock-backend checkpoint state snapshots via `src/train/state.py` (`TrainingState`)
 
 ## Project Structure
 

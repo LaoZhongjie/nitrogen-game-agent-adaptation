@@ -6,6 +6,7 @@ from pathlib import Path
 from scripts.finetune import FineTuneConfig, load_config, run_finetune
 from src.train.runner import TrainingRunContext, TrainingRunner, TrainingStepResult
 from src.data.schema import SplitName
+from src.train.state import TRAINING_STATE_SCHEMA, TrainingState
 
 
 def _touch_frames(frames_dir: Path, frame_names: list[str]) -> None:
@@ -159,6 +160,7 @@ def test_run_finetune_training_skeleton_writes_artifacts(tmp_path: Path) -> None
     assert ck_meta["step_count"] == 3
     assert isinstance(ck_meta["state_digest"], str)
     assert len(ck_meta["state_digest"]) == 64
+    assert "state" not in checkpoint_payload
     assert metrics_payload["mode"] == "train_stub"
     assert metrics_payload["processed_samples"] == report["processed_samples"]
 
@@ -217,6 +219,7 @@ def test_run_finetune_train_noop_backend_writes_empty_steps(tmp_path: Path) -> N
     assert ck_meta["checkpoint_version"] == "v1"
     assert ck_meta["backend"] == "train_noop"
     assert ck_meta["step_count"] == 5
+    assert "state" not in checkpoint_payload
 
     training_metadata_path = Path(report["training_metadata_path"])
     training_payload = json.loads(training_metadata_path.read_text(encoding="utf-8"))
@@ -276,6 +279,13 @@ def test_run_finetune_train_mock_backend_writes_nontrivial_steps(tmp_path: Path)
     assert ck_meta["step_count"] == 4
     assert isinstance(ck_meta["state_digest"], str)
     assert len(ck_meta["state_digest"]) == 64
+    state_payload = checkpoint_payload["state"]
+    assert state_payload["schema"] == TRAINING_STATE_SCHEMA
+    parsed_state = TrainingState.from_dict(state_payload)
+    assert parsed_state.backend == "train_mock"
+    assert parsed_state.train_steps == 4
+    assert parsed_state.latest_step == 4
+    assert parsed_state.mock_learning_rate == 0.2
 
     training_metadata_path = Path(report["training_metadata_path"])
     training_payload = json.loads(training_metadata_path.read_text(encoding="utf-8"))

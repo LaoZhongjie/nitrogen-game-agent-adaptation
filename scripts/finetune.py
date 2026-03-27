@@ -9,7 +9,6 @@ This Stage 3 starter script intentionally focuses on integration contracts:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from dataclasses import dataclass, field
@@ -26,8 +25,9 @@ if __package__ in {None, ""}:
 from src.data.loader import ManifestDataset
 from src.data.schema import SplitName
 from src.model.alignment import VocabularyActionAligner, align_manifest_sample
-from src.train.checkpoint import validate_checkpoint_metadata
+from src.train.checkpoint import build_checkpoint_metadata, validate_checkpoint_metadata
 from src.train.runner import TrainingRunContext, TrainingRunner, run_train_backend_steps
+from src.train.state import TrainingState, validate_training_state
 
 RunnerFactory = Callable[[str], TrainingRunner]
 
@@ -47,29 +47,6 @@ def _build_train_backend_metadata(
     return metadata
 
 
-def _build_checkpoint_metadata(
-    *,
-    runner_backend: str,
-    train_steps: int,
-    seed: int,
-    processed_samples: int,
-    total_action_labels: int,
-    unknown_action_labels: int,
-) -> dict[str, Any]:
-    """Build deterministic checkpoint metadata contract."""
-    digest_input = (
-        f"{CHECKPOINT_VERSION}|{runner_backend}|{train_steps}|{seed}|"
-        f"{processed_samples}|{total_action_labels}|{unknown_action_labels}"
-    )
-    state_digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
-    return {
-        "checkpoint_version": CHECKPOINT_VERSION,
-        "backend": runner_backend,
-        "step_count": train_steps,
-        "state_digest": state_digest,
-    }
-
-
 def _validate_checkpoint_contract(checkpoint_payload: Mapping[str, Any]) -> None:
     """Validate checkpoint payload and nested metadata contract."""
     required = {"mode", "seed", "processed_samples", "checkpoint_metadata", "note"}
@@ -81,6 +58,16 @@ def _validate_checkpoint_contract(checkpoint_payload: Mapping[str, Any]) -> None
     if not isinstance(metadata, dict):
         raise ValueError("checkpoint_metadata must be an object.")
     validate_checkpoint_metadata(metadata)
+    mode = checkpoint_payload["mode"]
+    state = checkpoint_payload.get("state")
+    if mode == "train_mock" and state is None:
+        raise ValueError("checkpoint payload for train_mock must include state.")
+    if mode != "train_mock" and state is not None:
+        raise ValueError("checkpoint payload state is only supported for train_mock.")
+    if state is not None:
+        if not isinstance(state, dict):
+            raise ValueError("checkpoint state must be an object when provided.")
+        validate_training_state(state)
 
 
 def _normalized_mapping(raw: Mapping[str, Any]) -> dict[str, str]:
@@ -281,9 +268,10 @@ def run_finetune(config: FineTuneConfig, runner_factory: RunnerFactory | None = 
             runner = runner_factory(config.runner_backend)
             step_results = runner.run(context)
 
-        checkpoint_metadata = _build_checkpoint_metadata(
-            runner_backend=config.runner_backend,
-            train_steps=config.train_steps,
+        checkpoint_metadata = build_checkpoint_metadata(
+            checkpoint_version=CHECKPOINT_VERSION,
+            backend=config.runner_backend,
+            step_count=config.train_steps,
             seed=config.seed,
             processed_samples=processed_samples,
             total_action_labels=total_action_labels,
@@ -298,6 +286,17 @@ def run_finetune(config: FineTuneConfig, runner_factory: RunnerFactory | None = 
             "checkpoint_metadata": checkpoint_metadata,
             "note": f"placeholder checkpoint artifact; backend={config.runner_backend}",
         }
+        if config.runner_backend == "train_mock" and step_results:
+            latest = step_results[-1]
+            checkpoint_payload["state"] = TrainingState(
+                backend=config.runner_backend,
+                train_steps=config.train_steps,
+                latest_step=latest.step,
+                latest_loss=latest.loss,
+                known_ratio=latest.known_ratio,
+                samples_seen=latest.samples_seen,
+                mock_learning_rate=config.mock_learning_rate,
+            ).to_dict()
         _validate_checkpoint_contract(checkpoint_payload)
         with checkpoint_path.open("w", encoding="utf-8") as fp:
             json.dump(checkpoint_payload, fp, indent=2)
