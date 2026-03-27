@@ -5,7 +5,7 @@ from src.train.runner import (
     TrainingStepResult,
     resolve_runner_backend,
     run_train_backend_steps,
-    run_train_noop_steps,
+    run_mock_runner_steps,
     run_train_noop_steps,
     run_train_stub_steps,
 )
@@ -15,6 +15,7 @@ __all__ = [
     "TrainingStepResult",
     "resolve_runner_backend",
     "run_train_backend_steps",
+    "run_mock_runner_steps",
     "run_train_noop_steps",
     "run_train_stub_steps",
 ]

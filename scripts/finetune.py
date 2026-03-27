@@ -57,6 +57,7 @@ class FineTuneConfig:
     max_samples: int | None = None
     train_steps: int = 1
     runner_backend: str = "train_stub"
+    mock_learning_rate: float = 0.05
     dry_run: bool = True
     save_summary: bool = True
     action_mapping: Mapping[str, str] = field(default_factory=dict)
@@ -74,8 +75,10 @@ class FineTuneConfig:
             raise ValueError("max_samples must be > 0 when provided.")
         if self.train_steps <= 0:
             raise ValueError("train_steps must be > 0.")
-        if self.runner_backend not in {"train_stub", "train_noop"}:
-            raise ValueError("runner_backend must be one of: train_stub, train_noop.")
+        if self.runner_backend not in {"train_stub", "train_noop", "train_mock"}:
+            raise ValueError("runner_backend must be one of: train_stub, train_noop, train_mock.")
+        if self.mock_learning_rate <= 0.0:
+            raise ValueError("mock_learning_rate must be > 0.0.")
         if not self.unknown_action_id.strip():
             raise ValueError("unknown_action_id must be non-empty.")
         if not 0.0 <= self.confidence_floor <= 1.0:
@@ -116,6 +119,7 @@ def load_config(config_path: Path, dry_run_override: bool | None = None) -> Fine
         max_samples=int(raw["max_samples"]) if raw.get("max_samples") is not None else None,
         train_steps=int(raw.get("train_steps", 1)),
         runner_backend=str(raw.get("runner_backend", "train_stub")),
+        mock_learning_rate=float(raw.get("mock_learning_rate", 0.05)),
         dry_run=bool(raw.get("dry_run", True)),
         save_summary=bool(raw.get("save_summary", True)),
         action_mapping=mapping,
@@ -132,6 +136,7 @@ def load_config(config_path: Path, dry_run_override: bool | None = None) -> Fine
             max_samples=config.max_samples,
             train_steps=config.train_steps,
             runner_backend=config.runner_backend,
+            mock_learning_rate=config.mock_learning_rate,
             dry_run=dry_run_override,
             save_summary=config.save_summary,
             action_mapping=config.action_mapping,
@@ -179,6 +184,8 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
         "output_dir": str(output_dir),
         "split": None if config.split is None else config.split.value,
         "train_steps": config.train_steps,
+        "runner_backend": config.runner_backend,
+        "mock_learning_rate": config.mock_learning_rate,
         "processed_samples": processed_samples,
         "total_action_labels": total_action_labels,
         "unknown_action_labels": unknown_action_labels,
@@ -200,6 +207,7 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
             known_ratio=known_ratio,
             unknown_ratio=unknown_ratio,
             processed_samples=processed_samples,
+            mock_learning_rate=config.mock_learning_rate,
         )
 
         checkpoint_payload = {

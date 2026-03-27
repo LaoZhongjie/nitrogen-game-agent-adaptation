@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from src.train.runner import resolve_runner_backend, run_noop_runner_steps, run_train_stub_steps
+from src.train.runner import (
+    resolve_runner_backend,
+    run_mock_runner_steps,
+    run_noop_runner_steps,
+    run_train_stub_steps,
+)
 
 
 def test_run_train_stub_steps_emits_expected_step_shape() -> None:
@@ -46,3 +51,17 @@ def test_resolve_runner_backend_rejects_unknown_backend() -> None:
         assert "unsupported runner backend" in str(exc)
     else:
         raise AssertionError("Expected ValueError for unknown backend.")
+
+
+def test_run_mock_runner_steps_emits_nontrivial_loss_curve() -> None:
+    metrics = run_mock_runner_steps(
+        train_steps=3,
+        known_ratio=0.7,
+        unknown_ratio=0.3,
+        processed_samples=4,
+        mock_learning_rate=0.1,
+    )
+
+    assert len(metrics) == 3
+    assert metrics[0].loss > metrics[1].loss > metrics[2].loss
+    assert all(entry.samples_seen == 4 for entry in metrics)

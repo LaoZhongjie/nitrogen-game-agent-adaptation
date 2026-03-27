@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-RunnerBackend = Literal["train_stub", "train_noop"]
+RunnerBackend = Literal["train_stub", "train_noop", "train_mock"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -107,12 +107,48 @@ def run_noop_runner_steps(
     ]
 
 
+def run_mock_runner_steps(
+    *,
+    train_steps: int,
+    known_ratio: float,
+    unknown_ratio: float,
+    processed_samples: int,
+    mock_learning_rate: float,
+) -> list[TrainingStepResult]:
+    """Emit deterministic non-trivial mock runner metrics."""
+    if train_steps <= 0:
+        raise ValueError("train_steps must be > 0.")
+    if not 0.0 <= known_ratio <= 1.0:
+        raise ValueError("known_ratio must be in range [0.0, 1.0].")
+    if not 0.0 <= unknown_ratio <= 1.0:
+        raise ValueError("unknown_ratio must be in range [0.0, 1.0].")
+    if abs((known_ratio + unknown_ratio) - 1.0) > 1e-6:
+        raise ValueError("known_ratio + unknown_ratio must sum to 1.0.")
+    if processed_samples < 0:
+        raise ValueError("processed_samples must be >= 0.")
+    if mock_learning_rate <= 0.0:
+        raise ValueError("mock_learning_rate must be > 0.0.")
+
+    base_loss = 1.0 + unknown_ratio
+    return [
+        TrainingStepResult(
+            step=step_idx + 1,
+            loss=base_loss / float(1.0 + mock_learning_rate * float(step_idx + 1)),
+            known_ratio=known_ratio,
+            samples_seen=processed_samples,
+        )
+        for step_idx in range(train_steps)
+    ]
+
+
 def resolve_runner_backend(backend: str) -> RunnerBackend:
     """Validate and normalize runner backend name."""
     if backend == "train_stub":
         return "train_stub"
     if backend == "train_noop":
         return "train_noop"
+    if backend == "train_mock":
+        return "train_mock"
     raise ValueError(f"unsupported runner backend: {backend}")
 
 
@@ -123,6 +159,7 @@ def run_train_backend_steps(
     known_ratio: float,
     unknown_ratio: float,
     processed_samples: int,
+    mock_learning_rate: float = 0.05,
 ) -> list[TrainingStepResult]:
     """Dispatch to the configured training runner backend."""
     resolved = resolve_runner_backend(backend)
@@ -132,6 +169,14 @@ def run_train_backend_steps(
             known_ratio=known_ratio,
             unknown_ratio=unknown_ratio,
             processed_samples=processed_samples,
+        )
+    if resolved == "train_mock":
+        return run_mock_runner_steps(
+            train_steps=train_steps,
+            known_ratio=known_ratio,
+            unknown_ratio=unknown_ratio,
+            processed_samples=processed_samples,
+            mock_learning_rate=mock_learning_rate,
         )
     return run_noop_runner_steps(
         train_steps=train_steps,
