@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Protocol, Sequence
 
+from src.data.schema import ActionLabel
+
 
 @dataclass(slots=True, frozen=True)
 class RawActionRecord:
@@ -120,3 +122,15 @@ class VocabularyActionAligner:
             mean_confidence=mean_confidence,
         )
         return AlignmentBatch(records=records, summary=summary)
+
+
+def to_action_labels(aligned_actions: Sequence[AlignedActionRecord]) -> tuple[ActionLabel, ...]:
+    """Convert aligned actions into schema-level ``ActionLabel`` records."""
+    return tuple(
+        ActionLabel(
+            action_id=aligned.action_id,
+            action_text=aligned.action_text,
+            confidence=aligned.confidence,
+        )
+        for aligned in aligned_actions
+    )

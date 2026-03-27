@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.model.alignment import RawActionRecord, VocabularyActionAligner
+from src.model.alignment import AlignedActionRecord, RawActionRecord, VocabularyActionAligner, to_action_labels
 
 
 def test_vocabulary_aligner_maps_known_action() -> None:
@@ -101,3 +101,16 @@ def test_mapping_takes_precedence_over_alias_lookup() -> None:
     aligned = aligner.align(RawActionRecord(action_text="Move Left", confidence=1.0))
 
     assert aligned.action_id == "strafe_left"
+
+
+def test_to_action_labels_preserves_alignment_fields() -> None:
+    aligned_actions = (
+        AlignedActionRecord(action_id="jump", action_text="Jump", confidence=0.7),
+        AlignedActionRecord(action_id="move_left", action_text="left", confidence=0.8),
+    )
+
+    labels = to_action_labels(aligned_actions)
+
+    assert [label.action_id for label in labels] == ["jump", "move_left"]
+    assert [label.action_text for label in labels] == ["Jump", "left"]
+    assert [label.confidence for label in labels] == [0.7, 0.8]
