@@ -55,6 +55,7 @@ class FineTuneConfig:
     split: SplitName | None = None
     max_samples: int | None = None
     dry_run: bool = True
+    save_summary: bool = True
     action_mapping: Mapping[str, str] = field(default_factory=dict)
     action_aliases: Mapping[str, str] | None = None
     unknown_action_id: str = "unknown"
@@ -107,6 +108,7 @@ def load_config(config_path: Path, dry_run_override: bool | None = None) -> Fine
         split=split,
         max_samples=int(raw["max_samples"]) if raw.get("max_samples") is not None else None,
         dry_run=bool(raw.get("dry_run", True)),
+        save_summary=bool(raw.get("save_summary", True)),
         action_mapping=mapping,
         action_aliases=aliases,
         unknown_action_id=str(raw.get("unknown_action_id", "unknown")),
@@ -120,6 +122,7 @@ def load_config(config_path: Path, dry_run_override: bool | None = None) -> Fine
             split=config.split,
             max_samples=config.max_samples,
             dry_run=dry_run_override,
+            save_summary=config.save_summary,
             action_mapping=config.action_mapping,
             action_aliases=config.action_aliases,
             unknown_action_id=config.unknown_action_id,
@@ -159,7 +162,7 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
     metrics_path = output_dir / "metrics" / "latest_metrics.json"
     unknown_ratio = (unknown_action_labels / float(total_action_labels)) if total_action_labels > 0 else 0.0
 
-    return {
+    summary = {
         "mode": "dry_run",
         "manifest_path": config.manifest_path,
         "output_dir": str(output_dir),
@@ -172,6 +175,12 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
         "metrics_path": str(metrics_path),
         "seed": config.seed,
     }
+    if config.save_summary:
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        with metrics_path.open("w", encoding="utf-8") as fp:
+            json.dump(summary, fp, indent=2)
+            fp.write("\n")
+    return summary
 
 
 def parse_args() -> argparse.Namespace:
