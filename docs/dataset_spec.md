@@ -119,3 +119,26 @@ Validation behavior:
 - `actions.json` and `actions.csv` are mutually exclusive per episode
 - every frame must have an action label
 - split assignment is deterministic and episode-level
+
+## Stage 2 Alignment Contract (`src/model/alignment.py`)
+
+Stage 2 maps raw action text into canonical action IDs before creating schema-level
+`ActionLabel` records.
+
+Aligned output record (`AlignedActionRecord`) fields:
+
+- `action_id` (`str`): canonical action token or configured unknown token.
+- `action_text` (`str`): original raw action text.
+- `confidence` (`float`): original confidence in `[0.0, 1.0]`.
+- `alignment_source` (`str`): one of:
+  - `direct`: direct vocabulary mapping hit.
+  - `alias`: mapped via alias normalization before vocabulary lookup.
+  - `confidence_floor`: token mapped, but confidence was below `confidence_floor`,
+    so it was downgraded to unknown.
+  - `unknown`: no mapping/alias hit, so unknown fallback applied.
+
+Schema conversion:
+
+- `to_action_labels(...)` converts aligned records to `ActionLabel` tuples.
+- Conversion intentionally preserves only schema fields (`action_id`, `action_text`,
+  `confidence`) and drops alignment-only metadata such as `alignment_source`.

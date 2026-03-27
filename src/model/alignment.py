@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Protocol, Sequence
 
-from src.data.schema import ActionLabel
+from src.data.loader import ManifestSample
+from src.data.schema import ActionLabel, SplitName
 
 
 @dataclass(slots=True, frozen=True)
@@ -29,6 +30,7 @@ class AlignedActionRecord:
     action_id: str
     action_text: str
     confidence: float
+    alignment_source: str
 
     def __post_init__(self) -> None:
         if not self.action_id.strip():
@@ -37,6 +39,8 @@ class AlignedActionRecord:
             raise ValueError("action_text must be non-empty.")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("confidence must be in range [0.0, 1.0].")
+        if self.alignment_source not in {"direct", "alias", "confidence_floor", "unknown"}:
+            raise ValueError("alignment_source must be one of: direct, alias, confidence_floor, unknown.")
 
 
 class ActionAligner(Protocol):
@@ -77,31 +81,52 @@ class AlignmentBatch:
 
 
 @dataclass(slots=True, frozen=True)
+class AlignedManifestSample:
+    """Manifest sample with schema-level aligned action labels."""
+
+    episode_id: str
+    clip_id: str
+    frame_paths: tuple[str, ...]
+    action_labels: tuple[ActionLabel, ...]
+    split: SplitName
+
+
+@dataclass(slots=True, frozen=True)
 class VocabularyActionAligner:
     """Baseline action aligner using deterministic vocabulary lookup."""
 
     mapping: Mapping[str, str]
     aliases: Mapping[str, str] | None = None
     unknown_action_id: str = "unknown"
+    confidence_floor: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.unknown_action_id.strip():
             raise ValueError("unknown_action_id must be non-empty.")
+        if not 0.0 <= self.confidence_floor <= 1.0:
+            raise ValueError("confidence_floor must be in range [0.0, 1.0].")
 
     def align(self, raw_action: RawActionRecord) -> AlignedActionRecord:
         """Map raw action text to canonical action ID, with unknown fallback."""
         normalized = raw_action.action_text.strip().lower()
         action_id = self.mapping.get(normalized)
+        alignment_source = "direct" if action_id is not None else "unknown"
         if action_id is None and self.aliases is not None:
             alias_normalized = self.aliases.get(normalized)
             if alias_normalized is not None:
                 action_id = self.mapping.get(alias_normalized)
+                if action_id is not None:
+                    alignment_source = "alias"
+        if action_id is not None and raw_action.confidence < self.confidence_floor:
+            action_id = None
+            alignment_source = "confidence_floor"
         if action_id is None:
             action_id = self.unknown_action_id
         return AlignedActionRecord(
             action_id=action_id,
             action_text=raw_action.action_text,
             confidence=raw_action.confidence,
+            alignment_source=alignment_source,
         )
 
     def align_many(self, raw_actions: Sequence[RawActionRecord]) -> AlignmentBatch:
@@ -133,4 +158,49 @@ def to_action_labels(aligned_actions: Sequence[AlignedActionRecord]) -> tuple[Ac
             confidence=aligned.confidence,
         )
         for aligned in aligned_actions
+    )
+
+
+def align_action_texts_to_labels(
+    aligner: ActionAligner,
+    action_texts: Sequence[str],
+    confidences: Sequence[float] | None = None,
+) -> tuple[ActionLabel, ...]:
+    """Align raw action texts and return schema-level action labels.
+
+    If ``confidences`` is omitted, all actions use confidence ``1.0``.
+    """
+    if confidences is None:
+        raw_actions = tuple(RawActionRecord(action_text=text, confidence=1.0) for text in action_texts)
+    else:
+        if len(confidences) != len(action_texts):
+            raise ValueError("confidences length must match action_texts length.")
+        raw_actions = tuple(
+            RawActionRecord(action_text=text, confidence=confidence)
+            for text, confidence in zip(action_texts, confidences, strict=True)
+        )
+
+    aligned_actions = tuple(aligner.align(raw_action) for raw_action in raw_actions)
+    return to_action_labels(aligned_actions)
+
+
+def align_manifest_sample(
+    sample: ManifestSample,
+    aligner: ActionAligner,
+    confidences: Sequence[float] | None = None,
+) -> AlignedManifestSample:
+    """Align one manifest sample into schema-level action labels."""
+    if len(sample.frame_paths) != len(sample.action_labels):
+        raise ValueError("sample frame_paths and action_labels must have equal length.")
+    labels = align_action_texts_to_labels(
+        aligner=aligner,
+        action_texts=sample.action_labels,
+        confidences=confidences,
+    )
+    return AlignedManifestSample(
+        episode_id=sample.episode_id,
+        clip_id=sample.clip_id,
+        frame_paths=sample.frame_paths,
+        action_labels=labels,
+        split=sample.split,
     )
