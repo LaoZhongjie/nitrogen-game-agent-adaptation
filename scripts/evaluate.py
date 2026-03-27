@@ -33,6 +33,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output", required=True, help="Path to output evaluation report JSON.")
     parser.add_argument("--split", choices=["train", "val", "test"], default=None, help="Optional split filter.")
+    parser.add_argument(
+        "--allow-missing-clips",
+        action="store_true",
+        help="Allow manifest clips without predictions in --manifest/--predictions mode.",
+    )
     return parser.parse_args()
 
 
@@ -49,6 +54,7 @@ def main() -> None:
             manifest_path=args.manifest,
             predictions=predictions,
             split=split,
+            require_all_clips=not bool(args.allow_missing_clips),
         )
         report = build_evaluation_report(
             records=records,

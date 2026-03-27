@@ -53,15 +53,21 @@ def load_prediction_records(path: str | Path) -> tuple[PredictionRecord, ...]:
     return tuple(records)
 
 
-def _manifest_samples_by_clip(
+def _manifest_samples(
     *,
     manifest_path: str | Path,
     split: SplitName | None,
-) -> dict[str, ManifestSample]:
+) -> tuple[ManifestSample, ...]:
     dataset = ManifestDataset(manifest_path, split=split)
-    by_clip: dict[str, ManifestSample] = {}
-    for sample in dataset:
-        by_clip[sample.clip_id] = sample
+    return tuple(dataset)
+
+
+def _prediction_map(predictions: Sequence[PredictionRecord]) -> dict[str, PredictionRecord]:
+    by_clip: dict[str, PredictionRecord] = {}
+    for prediction in predictions:
+        if prediction.clip_id in by_clip:
+            raise ValueError(f"duplicate prediction clip_id: {prediction.clip_id}")
+        by_clip[prediction.clip_id] = prediction
     return by_clip
 
 
@@ -70,17 +76,34 @@ def build_evaluation_records_from_manifest_predictions(
     manifest_path: str | Path,
     predictions: Sequence[PredictionRecord],
     split: SplitName | None = None,
+    require_all_clips: bool = True,
 ) -> tuple[EvaluationRecord, ...]:
     """Join manifest targets with predicted actions into evaluation records."""
-    samples_by_clip = _manifest_samples_by_clip(manifest_path=manifest_path, split=split)
-    if len(samples_by_clip) == 0:
+    if len(predictions) == 0:
+        raise ValueError("predictions must be non-empty.")
+
+    manifest_samples = _manifest_samples(manifest_path=manifest_path, split=split)
+    if len(manifest_samples) == 0:
         raise ValueError("no manifest samples available for evaluation.")
+    samples_by_clip = {sample.clip_id: sample for sample in manifest_samples}
+    prediction_by_clip = _prediction_map(predictions)
+
+    unknown_clip_ids = sorted(set(prediction_by_clip.keys()).difference(samples_by_clip.keys()))
+    if unknown_clip_ids:
+        unknown_preview = ", ".join(unknown_clip_ids[:5])
+        raise ValueError(f"prediction clip_id not found in manifest split: {unknown_preview}")
+
+    if require_all_clips:
+        missing_clip_ids = sorted(set(samples_by_clip.keys()).difference(prediction_by_clip.keys()))
+        if missing_clip_ids:
+            missing_preview = ", ".join(missing_clip_ids[:5])
+            raise ValueError(f"missing predictions for manifest clips: {missing_preview}")
 
     records: list[EvaluationRecord] = []
-    for prediction in predictions:
-        sample = samples_by_clip.get(prediction.clip_id)
-        if sample is None:
-            raise ValueError(f"prediction clip_id not found in manifest split: {prediction.clip_id}")
+    for sample in manifest_samples:
+        prediction = prediction_by_clip.get(sample.clip_id)
+        if prediction is None:
+            continue
         if len(prediction.predicted_action_ids) != len(sample.action_labels):
             raise ValueError(
                 f"predicted_action_ids length mismatch for clip {prediction.clip_id}: "
@@ -96,6 +119,6 @@ def build_evaluation_records_from_manifest_predictions(
             )
         )
     if len(records) == 0:
-        raise ValueError("predictions must be non-empty.")
+        raise ValueError("predictions did not match any manifest clips.")
     return tuple(records)
 

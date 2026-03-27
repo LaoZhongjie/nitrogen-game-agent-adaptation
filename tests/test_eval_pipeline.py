@@ -96,3 +96,89 @@ def test_build_evaluation_records_rejects_length_mismatch(tmp_path: Path) -> Non
             split=SplitName.TRAIN,
         )
 
+
+def test_build_evaluation_records_rejects_missing_prediction_coverage(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw"
+    episode_dir = raw_root / "ep_001"
+    frame_names = [f"{i:04d}.png" for i in range(6)]
+    _touch_frames(episode_dir / "frames", frame_names)
+    _write_actions_json(episode_dir, frame_names, ["left", "jump", "left", "jump", "left", "jump"])
+
+    manifest = build_manifest(
+        BuildDatasetConfig(
+            input_root=str(raw_root),
+            output_manifest_path=str(tmp_path / "manifest.json"),
+            seed=0,
+            split_policy=SplitPolicy(train=0.9999998, val=1e-7, test=1e-7),
+            clip_length=3,
+            stride=3,
+        )
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    predictions = (
+        PredictionRecord(
+            clip_id="ep_001_clip_000000",
+            predicted_action_ids=("left", "slide", "left"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="missing predictions"):
+        build_evaluation_records_from_manifest_predictions(
+            manifest_path=manifest_path,
+            predictions=predictions,
+            split=SplitName.TRAIN,
+        )
+
+
+def test_build_evaluation_records_rejects_duplicate_prediction_clip_ids(tmp_path: Path) -> None:
+    manifest_path = _build_manifest(tmp_path)
+    predictions = (
+        PredictionRecord(clip_id="ep_001_clip_000000", predicted_action_ids=("left", "slide", "left")),
+        PredictionRecord(clip_id="ep_001_clip_000000", predicted_action_ids=("left", "jump", "left")),
+    )
+
+    with pytest.raises(ValueError, match="duplicate prediction clip_id"):
+        build_evaluation_records_from_manifest_predictions(
+            manifest_path=manifest_path,
+            predictions=predictions,
+            split=SplitName.TRAIN,
+        )
+
+
+def test_build_evaluation_records_allows_partial_coverage_when_enabled(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw"
+    episode_dir = raw_root / "ep_001"
+    frame_names = [f"{i:04d}.png" for i in range(6)]
+    _touch_frames(episode_dir / "frames", frame_names)
+    _write_actions_json(episode_dir, frame_names, ["left", "jump", "left", "jump", "left", "jump"])
+
+    manifest = build_manifest(
+        BuildDatasetConfig(
+            input_root=str(raw_root),
+            output_manifest_path=str(tmp_path / "manifest.json"),
+            seed=0,
+            split_policy=SplitPolicy(train=0.9999998, val=1e-7, test=1e-7),
+            clip_length=3,
+            stride=3,
+        )
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    predictions = (
+        PredictionRecord(
+            clip_id="ep_001_clip_000000",
+            predicted_action_ids=("left", "slide", "left"),
+        ),
+    )
+
+    records = build_evaluation_records_from_manifest_predictions(
+        manifest_path=manifest_path,
+        predictions=predictions,
+        split=SplitName.TRAIN,
+        require_all_clips=False,
+    )
+    assert len(records) == 1
+

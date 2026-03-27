@@ -167,3 +167,62 @@ def test_evaluate_cli_manifest_predictions_mode(tmp_path: Path, monkeypatch: obj
     assert printed["summary"]["action_accuracy"] == 2.0 / 3.0
     assert output_path.exists()
 
+
+def test_evaluate_cli_manifest_predictions_rejects_missing_coverage_by_default(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    raw_root = tmp_path / "raw"
+    episode_dir = raw_root / "ep_001"
+    frame_names = [f"{i:04d}.png" for i in range(6)]
+    _touch_frames(episode_dir / "frames", frame_names)
+    _write_actions_json(episode_dir, frame_names, ["left", "jump", "left", "jump", "left", "jump"])
+    manifest = build_manifest(
+        BuildDatasetConfig(
+            input_root=str(raw_root),
+            output_manifest_path=str(tmp_path / "manifest.json"),
+            seed=0,
+            split_policy=SplitPolicy(train=0.9999998, val=1e-7, test=1e-7),
+            clip_length=3,
+            stride=3,
+        )
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    predictions_path = tmp_path / "eval" / "predictions.json"
+    predictions_path.parent.mkdir(parents=True, exist_ok=True)
+    predictions_path.write_text(
+        json.dumps(
+            [
+                {
+                    "clip_id": "ep_001_clip_000000",
+                    "predicted_action_ids": ["left", "slide", "left"],
+                }
+            ],
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "evaluate.py",
+            "--manifest",
+            str(manifest_path),
+            "--predictions",
+            str(predictions_path),
+            "--output",
+            str(tmp_path / "reports" / "offline_eval_partial.json"),
+            "--split",
+            "train",
+        ],
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="missing predictions"):
+        evaluate_main()
+
