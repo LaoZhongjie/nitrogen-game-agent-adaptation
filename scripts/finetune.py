@@ -9,6 +9,7 @@ This Stage 3 starter script intentionally focuses on integration contracts:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from dataclasses import dataclass, field
@@ -29,6 +30,8 @@ from src.train.runner import TrainingRunContext, TrainingRunner, run_train_backe
 
 RunnerFactory = Callable[[str], TrainingRunner]
 
+CHECKPOINT_VERSION = "v1"
+
 
 def _build_train_backend_metadata(
     *,
@@ -40,6 +43,29 @@ def _build_train_backend_metadata(
     if runner_backend == "train_mock":
         metadata["mock_learning_rate"] = mock_learning_rate
     return metadata
+
+
+def _build_checkpoint_metadata(
+    *,
+    runner_backend: str,
+    train_steps: int,
+    seed: int,
+    processed_samples: int,
+    total_action_labels: int,
+    unknown_action_labels: int,
+) -> dict[str, Any]:
+    """Build deterministic checkpoint metadata contract."""
+    digest_input = (
+        f"{CHECKPOINT_VERSION}|{runner_backend}|{train_steps}|{seed}|"
+        f"{processed_samples}|{total_action_labels}|{unknown_action_labels}"
+    )
+    state_digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
+    return {
+        "checkpoint_version": CHECKPOINT_VERSION,
+        "backend": runner_backend,
+        "step_count": train_steps,
+        "state_digest": state_digest,
+    }
 
 
 def _normalized_mapping(raw: Mapping[str, Any]) -> dict[str, str]:
@@ -199,6 +225,7 @@ def run_finetune(config: FineTuneConfig, runner_factory: RunnerFactory | None = 
         "mode": mode,
         "runner_backend": config.runner_backend,
         "train_backend_metadata": train_backend_metadata,
+        "checkpoint_version": CHECKPOINT_VERSION,
         "manifest_path": config.manifest_path,
         "output_dir": str(output_dir),
         "split": None if config.split is None else config.split.value,
@@ -239,10 +266,20 @@ def run_finetune(config: FineTuneConfig, runner_factory: RunnerFactory | None = 
             runner = runner_factory(config.runner_backend)
             step_results = runner.run(context)
 
+        checkpoint_metadata = _build_checkpoint_metadata(
+            runner_backend=config.runner_backend,
+            train_steps=config.train_steps,
+            seed=config.seed,
+            processed_samples=processed_samples,
+            total_action_labels=total_action_labels,
+            unknown_action_labels=unknown_action_labels,
+        )
+
         checkpoint_payload = {
             "mode": config.runner_backend,
             "seed": config.seed,
             "processed_samples": processed_samples,
+            "checkpoint_metadata": checkpoint_metadata,
             "note": f"placeholder checkpoint artifact; backend={config.runner_backend}",
         }
         with checkpoint_path.open("w", encoding="utf-8") as fp:
@@ -260,6 +297,7 @@ def run_finetune(config: FineTuneConfig, runner_factory: RunnerFactory | None = 
             "step_metrics": [result.to_dict() for result in step_results],
             "runner_backend": config.runner_backend,
             "train_backend_metadata": train_backend_metadata,
+            "checkpoint_metadata": checkpoint_metadata,
             "note": f"placeholder training metadata; backend={config.runner_backend}",
         }
         with training_metadata_path.open("w", encoding="utf-8") as fp:

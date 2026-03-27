@@ -63,10 +63,19 @@ When `save_summary=true`, summary is written to:
 
 - `output_dir/metrics/latest_metrics.json`
 
-In `train_stub` mode (`dry_run=false`), placeholder artifacts are also written:
+In non-dry-run backend modes (`dry_run=false`), placeholder artifacts are also written:
 
 - `output_dir/checkpoints/latest.ckpt`
 - `output_dir/metrics/training_metadata.json`
+
+`latest.ckpt` is a JSON checkpoint metadata record with a stable schema:
+
+- `checkpoint_version` (`str`, current `"v1"`)
+- `backend` (`str`)
+- `step_count` (`int`)
+- `state_digest` (`str`): deterministic digest-like token for backend state snapshot
+- `seed` (`int`)
+- `processed_samples` (`int`)
 
 `training_metadata.json` includes deterministic `step_metrics` entries and backend metadata:
 

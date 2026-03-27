@@ -152,6 +152,12 @@ def test_run_finetune_training_skeleton_writes_artifacts(tmp_path: Path) -> None
 
     assert checkpoint_payload["mode"] == "train_stub"
     assert checkpoint_payload["seed"] == 11
+    ck_meta = checkpoint_payload["checkpoint_metadata"]
+    assert ck_meta["checkpoint_version"] == "v1"
+    assert ck_meta["backend"] == "train_stub"
+    assert ck_meta["step_count"] == 3
+    assert isinstance(ck_meta["state_digest"], str)
+    assert len(ck_meta["state_digest"]) == 64
     assert metrics_payload["mode"] == "train_stub"
     assert metrics_payload["processed_samples"] == report["processed_samples"]
 
@@ -204,6 +210,12 @@ def test_run_finetune_train_noop_backend_writes_empty_steps(tmp_path: Path) -> N
     assert report["mode"] == "train_noop"
     assert report["runner_backend"] == "train_noop"
 
+    checkpoint_payload = json.loads(Path(report["checkpoint_path"]).read_text(encoding="utf-8"))
+    ck_meta = checkpoint_payload["checkpoint_metadata"]
+    assert ck_meta["checkpoint_version"] == "v1"
+    assert ck_meta["backend"] == "train_noop"
+    assert ck_meta["step_count"] == 5
+
     training_metadata_path = Path(report["training_metadata_path"])
     training_payload = json.loads(training_metadata_path.read_text(encoding="utf-8"))
     assert training_payload["mode"] == "train_noop"
@@ -253,6 +265,14 @@ def test_run_finetune_train_mock_backend_writes_nontrivial_steps(tmp_path: Path)
     assert report["runner_backend"] == "train_mock"
     assert report["mock_learning_rate"] == 0.2
     assert report["train_backend_metadata"]["mock_learning_rate"] == 0.2
+
+    checkpoint_payload = json.loads(Path(report["checkpoint_path"]).read_text(encoding="utf-8"))
+    ck_meta = checkpoint_payload["checkpoint_metadata"]
+    assert ck_meta["checkpoint_version"] == "v1"
+    assert ck_meta["backend"] == "train_mock"
+    assert ck_meta["step_count"] == 4
+    assert isinstance(ck_meta["state_digest"], str)
+    assert len(ck_meta["state_digest"]) == 64
 
     training_metadata_path = Path(report["training_metadata_path"])
     training_payload = json.loads(training_metadata_path.read_text(encoding="utf-8"))
