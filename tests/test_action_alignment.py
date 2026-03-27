@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from src.model.alignment import AlignedActionRecord, RawActionRecord, VocabularyActionAligner, to_action_labels
+from src.model.alignment import (
+    AlignedActionRecord,
+    RawActionRecord,
+    VocabularyActionAligner,
+    align_action_texts_to_labels,
+    to_action_labels,
+)
 
 
 def test_vocabulary_aligner_maps_known_action() -> None:
@@ -169,3 +175,44 @@ def test_align_many_summary_reflects_confidence_floor_unknowns() -> None:
     assert [record.alignment_source for record in batch.records] == ["direct", "confidence_floor", "unknown"]
     assert batch.summary.known_count == 1
     assert batch.summary.unknown_count == 2
+
+
+def test_align_action_texts_to_labels_uses_default_confidence() -> None:
+    aligner = VocabularyActionAligner(mapping={"jump": "jump"})
+
+    labels = align_action_texts_to_labels(
+        aligner=aligner,
+        action_texts=["jump", "slide"],
+    )
+
+    assert [label.action_id for label in labels] == ["jump", "unknown"]
+    assert [label.confidence for label in labels] == [1.0, 1.0]
+
+
+def test_align_action_texts_to_labels_rejects_length_mismatch() -> None:
+    aligner = VocabularyActionAligner(mapping={"jump": "jump"})
+
+    with pytest.raises(ValueError, match="must match"):
+        align_action_texts_to_labels(
+            aligner=aligner,
+            action_texts=["jump", "slide"],
+            confidences=[0.9],
+        )
+
+
+def test_align_action_texts_to_labels_respects_alias_and_confidence_floor() -> None:
+    aligner = VocabularyActionAligner(
+        mapping={"left": "move_left"},
+        aliases={"move left": "left"},
+        unknown_action_id="other",
+        confidence_floor=0.6,
+    )
+
+    labels = align_action_texts_to_labels(
+        aligner=aligner,
+        action_texts=["Move Left", "left", "strafe"],
+        confidences=[0.7, 0.5, 0.9],
+    )
+
+    assert [label.action_id for label in labels] == ["move_left", "other", "other"]
+    assert [label.confidence for label in labels] == [0.7, 0.5, 0.9]

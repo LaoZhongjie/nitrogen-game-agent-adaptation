@@ -147,3 +147,26 @@ def to_action_labels(aligned_actions: Sequence[AlignedActionRecord]) -> tuple[Ac
         )
         for aligned in aligned_actions
     )
+
+
+def align_action_texts_to_labels(
+    aligner: ActionAligner,
+    action_texts: Sequence[str],
+    confidences: Sequence[float] | None = None,
+) -> tuple[ActionLabel, ...]:
+    """Align raw action texts and return schema-level action labels.
+
+    If ``confidences`` is omitted, all actions use confidence ``1.0``.
+    """
+    if confidences is None:
+        raw_actions = tuple(RawActionRecord(action_text=text, confidence=1.0) for text in action_texts)
+    else:
+        if len(confidences) != len(action_texts):
+            raise ValueError("confidences length must match action_texts length.")
+        raw_actions = tuple(
+            RawActionRecord(action_text=text, confidence=confidence)
+            for text, confidence in zip(action_texts, confidences, strict=True)
+        )
+
+    aligned_actions = tuple(aligner.align(raw_action) for raw_action in raw_actions)
+    return to_action_labels(aligned_actions)
