@@ -31,10 +31,13 @@ python3.12 -m pytest -q
 
 ### Build a Dataset Manifest
 
-The dataset builder expects a JSON config (see `docs/dataset_spec.md` for fields):
+The dataset builder scans an input root where each episode is:
+
+- `data/raw/<episode_id>/frames/` (frame image files)
+- `data/raw/<episode_id>/actions.json` or `actions.csv` (frame filename → action label)
 
 ```bash
-python3.12 -m scripts.build_dataset --config path/to/build_config.json
+python3.12 scripts/build_dataset.py --input data/raw --output data/processed/manifest.json
 ```
 
 This creates a normalized manifest JSON file containing validated episode records and split information.

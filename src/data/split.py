@@ -1,30 +1,37 @@
-"""Deterministic episode-level split assignment."""
+"""Deterministic episode-level dataset split assignment."""
 
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 
 from src.data.schema import SplitName, SplitPolicy
 
 
+@dataclass(slots=True, frozen=True)
 class EpisodeSplitAssigner:
-    """Assigns episodes to train/val/test splits deterministically using a hash-based scheme."""
+    """Assign a deterministic split to each episode ID."""
 
-    def __init__(self, policy: SplitPolicy, seed: int) -> None:
-        self._policy = policy
-        self._seed = seed
+    policy: SplitPolicy
+    seed: int = 0
 
     def assign(self, episode_id: str) -> SplitName:
-        """Return the split for the given episode, deterministic from episode_id and seed."""
-        key = f"{self._seed}:{episode_id}"
-        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
-        value = int(digest, 16) % 10_000 / 10_000
+        """Return a stable split assignment for ``episode_id``."""
+        if not episode_id.strip():
+            raise ValueError("episode_id must be non-empty.")
 
-        train_boundary = self._policy.train
-        val_boundary = train_boundary + self._policy.val
+        score = self._stable_score(episode_id)
+        train_cutoff = self.policy.train
+        val_cutoff = train_cutoff + self.policy.val
 
-        if value < train_boundary:
+        if score < train_cutoff:
             return SplitName.TRAIN
-        if value < val_boundary:
+        if score < val_cutoff:
             return SplitName.VAL
         return SplitName.TEST
+
+    def _stable_score(self, episode_id: str) -> float:
+        """Map (seed, episode_id) to a deterministic score in [0.0, 1.0)."""
+        digest = hashlib.sha256(f"{self.seed}:{episode_id}".encode("utf-8")).digest()
+        bucket = int.from_bytes(digest[:8], byteorder="big", signed=False)
+        return bucket / float(1 << 64)
