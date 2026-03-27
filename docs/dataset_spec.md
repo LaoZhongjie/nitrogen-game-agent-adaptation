@@ -6,13 +6,16 @@ This document defines the canonical dataset contract for NitroGen post-training 
 
 The dataset is composed of demonstration episodes. Each episode contains one or more clips, and each clip contains an ordered sequence of frames with aligned action labels.
 
-Output artifact from `scripts/build_dataset.py` is a manifest JSON:
+Output artifact from `scripts/build_dataset.py` is a clip-manifest JSON:
 
-- `dataset_name`
-- `source_root`
-- `episodes` (validated episode records)
-- `split_policy` (rules and ratios)
-- `split_counts`
+- `schema_version` (currently `v2_clip_manifest`)
+- `input_root` (normalized source directory path)
+- `split_policy` (`train` / `val` / `test` ratios and `seed`)
+- `episode_splits` (episode-level deterministic split assignment)
+- `clip_length`
+- `stride`
+- `split_counts` (clip counts by split)
+- `clips` (flat clip list with `episode_id`, `clip_id`, `frame_paths`, `action_labels`, `split`)
 
 ## Data Entities
 
@@ -90,23 +93,29 @@ Rules:
 - All clips/frames of an episode inherit the episode split.
 - Test split should contain only held-out episodes.
 
-## Build Config (Input to `scripts/build_dataset.py`)
+## Build Inputs / CLI (`scripts/build_dataset.py`)
 
-Example:
+The current builder consumes an episodes root directory (not an `episodes_file` JSON):
 
-```json
-{
-  "dataset_name": "new_game_small_demos_v1",
-  "source_root": "data/raw/new_game_demos",
-  "output_manifest_path": "data/processed/new_game_small_demos_v1_manifest.json",
-  "seed": 7,
-  "split_ratios": {
-    "train": 0.8,
-    "val": 0.1,
-    "test": 0.1
-  },
-  "episodes_file": "data/raw/new_game_demos/episodes.json"
-}
+- `<input_root>/<episode_id>/frames/` (frame files)
+- `<input_root>/<episode_id>/actions.json` **or** `actions.csv`
+
+CLI usage:
+
+```bash
+python3.12 scripts/build_dataset.py \
+  --input data/raw \
+  --output data/processed/manifest.json \
+  --seed 7 \
+  --clip-length 16 \
+  --stride 16 \
+  --train 0.8 \
+  --val 0.1 \
+  --test 0.1
 ```
 
-`episodes_file` is expected to contain a JSON array of raw episode-like dictionaries that conform to the schema fields above (except `split`, which can be omitted and assigned during build).
+Validation behavior:
+
+- `actions.json` and `actions.csv` are mutually exclusive per episode
+- every frame must have an action label
+- split assignment is deterministic and episode-level
