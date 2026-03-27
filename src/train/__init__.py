@@ -13,6 +13,7 @@ from src.train.runner import (
     run_train_noop_steps,
     run_train_stub_steps,
 )
+from src.train.checkpoint import build_checkpoint_metadata, validate_checkpoint_metadata
 
 __all__ = [
     "RunnerBackend",
@@ -26,5 +27,7 @@ __all__ = [
     "run_noop_runner_steps",
     "run_train_noop_steps",
     "run_train_stub_steps",
+    "build_checkpoint_metadata",
+    "validate_checkpoint_metadata",
 ]
 

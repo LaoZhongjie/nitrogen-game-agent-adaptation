@@ -68,14 +68,18 @@ In non-dry-run backend modes (`dry_run=false`), placeholder artifacts are also w
 - `output_dir/checkpoints/latest.ckpt`
 - `output_dir/metrics/training_metadata.json`
 
-`latest.ckpt` is a JSON checkpoint metadata record with a stable schema:
+`latest.ckpt` is a JSON checkpoint payload with stable top-level markers and nested metadata:
 
-- `checkpoint_version` (`str`, current `"v1"`)
-- `backend` (`str`)
-- `step_count` (`int`)
-- `state_digest` (`str`): deterministic digest-like token for backend state snapshot
+- `schema` (`str`, current `"checkpoint_payload_v1"`)
+- `mode` (`str`)
 - `seed` (`int`)
 - `processed_samples` (`int`)
+- `checkpoint_metadata` (`dict`) containing:
+  - `checkpoint_version` (`str`, current `"v1"`)
+  - `backend` (`str`)
+  - `step_count` (`int`)
+  - `state_digest` (`str`): deterministic digest-like token for backend state snapshot
+
 
 `training_metadata.json` includes deterministic `step_metrics` entries and backend metadata:
 

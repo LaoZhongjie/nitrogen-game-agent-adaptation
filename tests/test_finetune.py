@@ -152,6 +152,7 @@ def test_run_finetune_training_skeleton_writes_artifacts(tmp_path: Path) -> None
 
     assert checkpoint_payload["mode"] == "train_stub"
     assert checkpoint_payload["seed"] == 11
+    assert checkpoint_payload["schema"] == "checkpoint_payload_v1"
     ck_meta = checkpoint_payload["checkpoint_metadata"]
     assert ck_meta["checkpoint_version"] == "v1"
     assert ck_meta["backend"] == "train_stub"
@@ -211,6 +212,7 @@ def test_run_finetune_train_noop_backend_writes_empty_steps(tmp_path: Path) -> N
     assert report["runner_backend"] == "train_noop"
 
     checkpoint_payload = json.loads(Path(report["checkpoint_path"]).read_text(encoding="utf-8"))
+    assert checkpoint_payload["schema"] == "checkpoint_payload_v1"
     ck_meta = checkpoint_payload["checkpoint_metadata"]
     assert ck_meta["checkpoint_version"] == "v1"
     assert ck_meta["backend"] == "train_noop"
@@ -267,6 +269,7 @@ def test_run_finetune_train_mock_backend_writes_nontrivial_steps(tmp_path: Path)
     assert report["train_backend_metadata"]["mock_learning_rate"] == 0.2
 
     checkpoint_payload = json.loads(Path(report["checkpoint_path"]).read_text(encoding="utf-8"))
+    assert checkpoint_payload["schema"] == "checkpoint_payload_v1"
     ck_meta = checkpoint_payload["checkpoint_metadata"]
     assert ck_meta["checkpoint_version"] == "v1"
     assert ck_meta["backend"] == "train_mock"

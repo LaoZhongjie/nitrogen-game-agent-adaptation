@@ -26,11 +26,13 @@ if __package__ in {None, ""}:
 from src.data.loader import ManifestDataset
 from src.data.schema import SplitName
 from src.model.alignment import VocabularyActionAligner, align_manifest_sample
+from src.train.checkpoint import validate_checkpoint_metadata
 from src.train.runner import TrainingRunContext, TrainingRunner, run_train_backend_steps
 
 RunnerFactory = Callable[[str], TrainingRunner]
 
 CHECKPOINT_VERSION = "v1"
+CHECKPOINT_PAYLOAD_SCHEMA = "checkpoint_payload_v1"
 
 
 def _build_train_backend_metadata(
@@ -66,6 +68,19 @@ def _build_checkpoint_metadata(
         "step_count": train_steps,
         "state_digest": state_digest,
     }
+
+
+def _validate_checkpoint_contract(checkpoint_payload: Mapping[str, Any]) -> None:
+    """Validate checkpoint payload and nested metadata contract."""
+    required = {"mode", "seed", "processed_samples", "checkpoint_metadata", "note"}
+    missing = required.difference(checkpoint_payload.keys())
+    if missing:
+        raise ValueError(f"checkpoint payload missing required keys: {sorted(missing)}")
+
+    metadata = checkpoint_payload["checkpoint_metadata"]
+    if not isinstance(metadata, dict):
+        raise ValueError("checkpoint_metadata must be an object.")
+    validate_checkpoint_metadata(metadata)
 
 
 def _normalized_mapping(raw: Mapping[str, Any]) -> dict[str, str]:
@@ -276,12 +291,14 @@ def run_finetune(config: FineTuneConfig, runner_factory: RunnerFactory | None = 
         )
 
         checkpoint_payload = {
+            "schema": CHECKPOINT_PAYLOAD_SCHEMA,
             "mode": config.runner_backend,
             "seed": config.seed,
             "processed_samples": processed_samples,
             "checkpoint_metadata": checkpoint_metadata,
             "note": f"placeholder checkpoint artifact; backend={config.runner_backend}",
         }
+        _validate_checkpoint_contract(checkpoint_payload)
         with checkpoint_path.open("w", encoding="utf-8") as fp:
             json.dump(checkpoint_payload, fp, indent=2)
             fp.write("\n")
