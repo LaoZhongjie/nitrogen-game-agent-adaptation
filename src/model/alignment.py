@@ -79,6 +79,7 @@ class VocabularyActionAligner:
     """Baseline action aligner using deterministic vocabulary lookup."""
 
     mapping: Mapping[str, str]
+    aliases: Mapping[str, str] | None = None
     unknown_action_id: str = "unknown"
 
     def __post_init__(self) -> None:
@@ -88,7 +89,13 @@ class VocabularyActionAligner:
     def align(self, raw_action: RawActionRecord) -> AlignedActionRecord:
         """Map raw action text to canonical action ID, with unknown fallback."""
         normalized = raw_action.action_text.strip().lower()
-        action_id = self.mapping.get(normalized, self.unknown_action_id)
+        action_id = self.mapping.get(normalized)
+        if action_id is None and self.aliases is not None:
+            alias_normalized = self.aliases.get(normalized)
+            if alias_normalized is not None:
+                action_id = self.mapping.get(alias_normalized)
+        if action_id is None:
+            action_id = self.unknown_action_id
         return AlignedActionRecord(
             action_id=action_id,
             action_text=raw_action.action_text,

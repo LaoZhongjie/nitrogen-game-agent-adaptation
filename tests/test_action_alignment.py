@@ -65,3 +65,39 @@ def test_align_many_returns_mixed_known_unknown_summary() -> None:
     assert batch.summary.known_count == 2
     assert batch.summary.unknown_count == 1
     assert batch.summary.mean_confidence == pytest.approx((1.0 + 0.4 + 0.6) / 3.0)
+
+
+def test_aliases_map_to_canonical_token_before_lookup() -> None:
+    aligner = VocabularyActionAligner(
+        mapping={"left": "move_left"},
+        aliases={"move left": "left"},
+        unknown_action_id="other",
+    )
+
+    aligned = aligner.align(RawActionRecord(action_text="Move Left", confidence=0.8))
+
+    assert aligned.action_id == "move_left"
+
+
+def test_aliases_fall_back_when_alias_not_found() -> None:
+    aligner = VocabularyActionAligner(
+        mapping={"left": "move_left"},
+        aliases={"move left": "left"},
+        unknown_action_id="other",
+    )
+
+    aligned = aligner.align(RawActionRecord(action_text="strafe", confidence=0.3))
+
+    assert aligned.action_id == "other"
+
+
+def test_mapping_takes_precedence_over_alias_lookup() -> None:
+    aligner = VocabularyActionAligner(
+        mapping={"move left": "strafe_left", "left": "move_left"},
+        aliases={"move left": "left"},
+        unknown_action_id="other",
+    )
+
+    aligned = aligner.align(RawActionRecord(action_text="Move Left", confidence=1.0))
+
+    assert aligned.action_id == "strafe_left"
