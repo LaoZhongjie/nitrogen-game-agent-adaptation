@@ -1,0 +1,44 @@
+---
+description: Rules for NitroGen post-training project
+globs:
+  - "**/*.py"
+  - "**/*.md"
+alwaysApply: true
+---
+
+# Project
+This repository implements a small-scale NitroGen post-training project for adapting a pretrained gaming agent to a new game domain.
+
+# Goals
+- Build a clean and reproducible pipeline
+- Prefer simple, testable modules over clever abstractions
+- Keep data contract stable across scripts
+- Make all experiments configurable
+
+# Commands
+- Use Python 3.12
+- Prefer `python -m` execution when possible
+- Run tests after major file changes
+- Keep scripts runnable from the repo root
+
+# Code style
+- Use type hints everywhere
+- Use dataclasses or pydantic-style schemas for dataset records where appropriate
+- Add docstrings to all public classes and functions
+- Do not hardcode paths; use config files
+- Separate data logic, training logic, and evaluation logic
+
+# Workflow
+- Before writing code, check whether a schema or config file already defines the interface
+- When adding a new module, also add or update a minimal test
+- Prefer small commits and small code generation tasks
+- When uncertain, propose file-by-file changes instead of rewriting the whole codebase
+
+# Project structure
+- Data logic goes in `src/data`
+- Model wrappers go in `src/model`
+- Training logic goes in `src/train`
+- Evaluation logic goes in `src/eval`
+- Visualization helpers go in `src/viz`
+- CLI scripts go in `scripts`
+- Specs and planning docs go in `docs`
