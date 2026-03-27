@@ -30,6 +30,18 @@ from src.train.runner import TrainingRunContext, TrainingRunner, run_train_backe
 RunnerFactory = Callable[[str], TrainingRunner]
 
 
+def _build_train_backend_metadata(
+    *,
+    runner_backend: str,
+    mock_learning_rate: float,
+) -> dict[str, Any]:
+    """Build stable backend metadata for summaries/artifacts."""
+    metadata: dict[str, Any] = {"runner_backend": runner_backend}
+    if runner_backend == "train_mock":
+        metadata["mock_learning_rate"] = mock_learning_rate
+    return metadata
+
+
 def _normalized_mapping(raw: Mapping[str, Any]) -> dict[str, str]:
     """Normalize mapping keys/values for case-insensitive action lookup."""
     normalized: dict[str, str] = {}
@@ -179,9 +191,14 @@ def run_finetune(config: FineTuneConfig, runner_factory: RunnerFactory | None = 
     unknown_ratio = (unknown_action_labels / float(total_action_labels)) if total_action_labels > 0 else 0.0
 
     mode = "dry_run" if config.dry_run else config.runner_backend
+    train_backend_metadata = _build_train_backend_metadata(
+        runner_backend=config.runner_backend,
+        mock_learning_rate=config.mock_learning_rate,
+    )
     summary = {
         "mode": mode,
         "runner_backend": config.runner_backend,
+        "train_backend_metadata": train_backend_metadata,
         "manifest_path": config.manifest_path,
         "output_dir": str(output_dir),
         "split": None if config.split is None else config.split.value,
@@ -242,6 +259,7 @@ def run_finetune(config: FineTuneConfig, runner_factory: RunnerFactory | None = 
             "train_steps": config.train_steps,
             "step_metrics": [result.to_dict() for result in step_results],
             "runner_backend": config.runner_backend,
+            "train_backend_metadata": train_backend_metadata,
             "note": f"placeholder training metadata; backend={config.runner_backend}",
         }
         with training_metadata_path.open("w", encoding="utf-8") as fp:
