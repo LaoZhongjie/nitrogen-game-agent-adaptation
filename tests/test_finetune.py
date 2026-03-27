@@ -6,6 +6,8 @@ from pathlib import Path
 from scripts.finetune import FineTuneConfig, load_config, run_finetune
 from src.train.runner import TrainingRunContext, TrainingRunner, TrainingStepResult
 from src.data.schema import SplitName
+from src.train.state import TRAINING_STATE_SCHEMA, TrainingState
+from src.train.summary import SUMMARY_SCHEMA
 
 
 def _touch_frames(frames_dir: Path, frame_names: list[str]) -> None:
@@ -54,6 +56,7 @@ def test_run_dry_run_reports_counts_and_checkpoint_dir(tmp_path: Path) -> None:
     )
     report = run_finetune(cfg)
 
+    assert report["schema"] == SUMMARY_SCHEMA
     assert report["split"] == "train"
     assert report["processed_samples"] == 1
     assert report["total_action_labels"] == 4
@@ -98,6 +101,7 @@ def test_run_finetune_persists_summary_metrics_file(tmp_path: Path) -> None:
     metrics_path = Path(report["metrics_path"])
     assert metrics_path.exists()
     metrics_payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert metrics_payload["schema"] == SUMMARY_SCHEMA
     assert metrics_payload["processed_samples"] == report["processed_samples"]
     assert metrics_payload["unknown_action_labels"] == report["unknown_action_labels"]
     assert "train_backend_metadata" in metrics_payload
@@ -143,6 +147,7 @@ def test_run_finetune_training_skeleton_writes_artifacts(tmp_path: Path) -> None
     metrics_path = Path(report["metrics_path"])
 
     assert report["mode"] == "train_stub"
+    assert report["schema"] == SUMMARY_SCHEMA
     assert report["seed"] == 11
     assert checkpoint_path.exists()
     assert metrics_path.exists()
@@ -152,12 +157,22 @@ def test_run_finetune_training_skeleton_writes_artifacts(tmp_path: Path) -> None
 
     assert checkpoint_payload["mode"] == "train_stub"
     assert checkpoint_payload["seed"] == 11
+    assert checkpoint_payload["schema"] == "checkpoint_payload_v1"
+    ck_meta = checkpoint_payload["checkpoint_metadata"]
+    assert ck_meta["checkpoint_version"] == "v1"
+    assert ck_meta["backend"] == "train_stub"
+    assert ck_meta["step_count"] == 3
+    assert isinstance(ck_meta["state_digest"], str)
+    assert len(ck_meta["state_digest"]) == 64
+    assert "state" not in checkpoint_payload
     assert metrics_payload["mode"] == "train_stub"
+    assert metrics_payload["schema"] == SUMMARY_SCHEMA
     assert metrics_payload["processed_samples"] == report["processed_samples"]
 
     training_metadata_path = Path(report["training_metadata_path"])
     assert training_metadata_path.exists()
     training_payload = json.loads(training_metadata_path.read_text(encoding="utf-8"))
+    assert training_payload["schema"] == "training_metadata_v1"
     assert training_payload["train_steps"] == 3
     assert len(training_payload["step_metrics"]) == 3
     assert training_payload["step_metrics"][0]["step"] == 1
@@ -203,9 +218,19 @@ def test_run_finetune_train_noop_backend_writes_empty_steps(tmp_path: Path) -> N
 
     assert report["mode"] == "train_noop"
     assert report["runner_backend"] == "train_noop"
+    assert report["schema"] == SUMMARY_SCHEMA
+
+    checkpoint_payload = json.loads(Path(report["checkpoint_path"]).read_text(encoding="utf-8"))
+    assert checkpoint_payload["schema"] == "checkpoint_payload_v1"
+    ck_meta = checkpoint_payload["checkpoint_metadata"]
+    assert ck_meta["checkpoint_version"] == "v1"
+    assert ck_meta["backend"] == "train_noop"
+    assert ck_meta["step_count"] == 5
+    assert "state" not in checkpoint_payload
 
     training_metadata_path = Path(report["training_metadata_path"])
     training_payload = json.loads(training_metadata_path.read_text(encoding="utf-8"))
+    assert training_payload["schema"] == "training_metadata_v1"
     assert training_payload["mode"] == "train_noop"
     assert training_payload["train_steps"] == 5
     assert len(training_payload["step_metrics"]) == 5
@@ -251,11 +276,29 @@ def test_run_finetune_train_mock_backend_writes_nontrivial_steps(tmp_path: Path)
 
     assert report["mode"] == "train_mock"
     assert report["runner_backend"] == "train_mock"
+    assert report["schema"] == SUMMARY_SCHEMA
     assert report["mock_learning_rate"] == 0.2
     assert report["train_backend_metadata"]["mock_learning_rate"] == 0.2
 
+    checkpoint_payload = json.loads(Path(report["checkpoint_path"]).read_text(encoding="utf-8"))
+    assert checkpoint_payload["schema"] == "checkpoint_payload_v1"
+    ck_meta = checkpoint_payload["checkpoint_metadata"]
+    assert ck_meta["checkpoint_version"] == "v1"
+    assert ck_meta["backend"] == "train_mock"
+    assert ck_meta["step_count"] == 4
+    assert isinstance(ck_meta["state_digest"], str)
+    assert len(ck_meta["state_digest"]) == 64
+    state_payload = checkpoint_payload["state"]
+    assert state_payload["schema"] == TRAINING_STATE_SCHEMA
+    parsed_state = TrainingState.from_dict(state_payload)
+    assert parsed_state.backend == "train_mock"
+    assert parsed_state.train_steps == 4
+    assert parsed_state.latest_step == 4
+    assert parsed_state.mock_learning_rate == 0.2
+
     training_metadata_path = Path(report["training_metadata_path"])
     training_payload = json.loads(training_metadata_path.read_text(encoding="utf-8"))
+    assert training_payload["schema"] == "training_metadata_v1"
     losses = [step["loss"] for step in training_payload["step_metrics"]]
     assert training_payload["runner_backend"] == "train_mock"
     assert len(losses) == 4

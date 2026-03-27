@@ -25,9 +25,16 @@ if __package__ in {None, ""}:
 from src.data.loader import ManifestDataset
 from src.data.schema import SplitName
 from src.model.alignment import VocabularyActionAligner, align_manifest_sample
+from src.train.checkpoint import build_checkpoint_metadata, validate_checkpoint_metadata
+from src.train.metadata import build_training_metadata, validate_training_metadata
 from src.train.runner import TrainingRunContext, TrainingRunner, run_train_backend_steps
+from src.train.state import TrainingState, validate_training_state
+from src.train.summary import build_summary_payload, validate_summary_payload
 
 RunnerFactory = Callable[[str], TrainingRunner]
+
+CHECKPOINT_VERSION = "v1"
+CHECKPOINT_PAYLOAD_SCHEMA = "checkpoint_payload_v1"
 
 
 def _build_train_backend_metadata(
@@ -40,6 +47,29 @@ def _build_train_backend_metadata(
     if runner_backend == "train_mock":
         metadata["mock_learning_rate"] = mock_learning_rate
     return metadata
+
+
+def _validate_checkpoint_contract(checkpoint_payload: Mapping[str, Any]) -> None:
+    """Validate checkpoint payload and nested metadata contract."""
+    required = {"mode", "seed", "processed_samples", "checkpoint_metadata", "note"}
+    missing = required.difference(checkpoint_payload.keys())
+    if missing:
+        raise ValueError(f"checkpoint payload missing required keys: {sorted(missing)}")
+
+    metadata = checkpoint_payload["checkpoint_metadata"]
+    if not isinstance(metadata, dict):
+        raise ValueError("checkpoint_metadata must be an object.")
+    validate_checkpoint_metadata(metadata)
+    mode = checkpoint_payload["mode"]
+    state = checkpoint_payload.get("state")
+    if mode == "train_mock" and state is None:
+        raise ValueError("checkpoint payload for train_mock must include state.")
+    if mode != "train_mock" and state is not None:
+        raise ValueError("checkpoint payload state is only supported for train_mock.")
+    if state is not None:
+        if not isinstance(state, dict):
+            raise ValueError("checkpoint state must be an object when provided.")
+        validate_training_state(state)
 
 
 def _normalized_mapping(raw: Mapping[str, Any]) -> dict[str, str]:
@@ -195,24 +225,26 @@ def run_finetune(config: FineTuneConfig, runner_factory: RunnerFactory | None = 
         runner_backend=config.runner_backend,
         mock_learning_rate=config.mock_learning_rate,
     )
-    summary = {
-        "mode": mode,
-        "runner_backend": config.runner_backend,
-        "train_backend_metadata": train_backend_metadata,
-        "manifest_path": config.manifest_path,
-        "output_dir": str(output_dir),
-        "split": None if config.split is None else config.split.value,
-        "train_steps": config.train_steps,
-        "mock_learning_rate": config.mock_learning_rate,
-        "processed_samples": processed_samples,
-        "total_action_labels": total_action_labels,
-        "unknown_action_labels": unknown_action_labels,
-        "unknown_ratio": unknown_ratio,
-        "checkpoint_path": str(checkpoint_path),
-        "metrics_path": str(metrics_path),
-        "training_metadata_path": str(training_metadata_path),
-        "seed": config.seed,
-    }
+    summary = build_summary_payload(
+        mode=mode,
+        runner_backend=config.runner_backend,
+        train_backend_metadata=train_backend_metadata,
+        checkpoint_version=CHECKPOINT_VERSION,
+        manifest_path=config.manifest_path,
+        output_dir=str(output_dir),
+        split=None if config.split is None else config.split.value,
+        train_steps=config.train_steps,
+        mock_learning_rate=config.mock_learning_rate,
+        processed_samples=processed_samples,
+        total_action_labels=total_action_labels,
+        unknown_action_labels=unknown_action_labels,
+        unknown_ratio=unknown_ratio,
+        checkpoint_path=str(checkpoint_path),
+        metrics_path=str(metrics_path),
+        training_metadata_path=str(training_metadata_path),
+        seed=config.seed,
+    )
+    validate_summary_payload(summary)
 
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -239,29 +271,55 @@ def run_finetune(config: FineTuneConfig, runner_factory: RunnerFactory | None = 
             runner = runner_factory(config.runner_backend)
             step_results = runner.run(context)
 
+        checkpoint_metadata = build_checkpoint_metadata(
+            checkpoint_version=CHECKPOINT_VERSION,
+            backend=config.runner_backend,
+            step_count=config.train_steps,
+            seed=config.seed,
+            processed_samples=processed_samples,
+            total_action_labels=total_action_labels,
+            unknown_action_labels=unknown_action_labels,
+        )
+
         checkpoint_payload = {
+            "schema": CHECKPOINT_PAYLOAD_SCHEMA,
             "mode": config.runner_backend,
             "seed": config.seed,
             "processed_samples": processed_samples,
+            "checkpoint_metadata": checkpoint_metadata,
             "note": f"placeholder checkpoint artifact; backend={config.runner_backend}",
         }
+        if config.runner_backend == "train_mock" and step_results:
+            latest = step_results[-1]
+            checkpoint_payload["state"] = TrainingState(
+                backend=config.runner_backend,
+                train_steps=config.train_steps,
+                latest_step=latest.step,
+                latest_loss=latest.loss,
+                known_ratio=latest.known_ratio,
+                samples_seen=latest.samples_seen,
+                mock_learning_rate=config.mock_learning_rate,
+            ).to_dict()
+        _validate_checkpoint_contract(checkpoint_payload)
         with checkpoint_path.open("w", encoding="utf-8") as fp:
             json.dump(checkpoint_payload, fp, indent=2)
             fp.write("\n")
 
-        training_metadata = {
-            "mode": config.runner_backend,
-            "seed": config.seed,
-            "processed_samples": processed_samples,
-            "total_action_labels": total_action_labels,
-            "unknown_action_labels": unknown_action_labels,
-            "unknown_ratio": unknown_ratio,
-            "train_steps": config.train_steps,
-            "step_metrics": [result.to_dict() for result in step_results],
-            "runner_backend": config.runner_backend,
-            "train_backend_metadata": train_backend_metadata,
-            "note": f"placeholder training metadata; backend={config.runner_backend}",
-        }
+        training_metadata = build_training_metadata(
+            mode=config.runner_backend,
+            seed=config.seed,
+            processed_samples=processed_samples,
+            total_action_labels=total_action_labels,
+            unknown_action_labels=unknown_action_labels,
+            unknown_ratio=unknown_ratio,
+            train_steps=config.train_steps,
+            step_metrics=step_results,
+            runner_backend=config.runner_backend,
+            train_backend_metadata=train_backend_metadata,
+            checkpoint_metadata=checkpoint_metadata,
+            note=f"placeholder training metadata; backend={config.runner_backend}",
+        )
+        validate_training_metadata(training_metadata)
         with training_metadata_path.open("w", encoding="utf-8") as fp:
             json.dump(training_metadata, fp, indent=2)
             fp.write("\n")
