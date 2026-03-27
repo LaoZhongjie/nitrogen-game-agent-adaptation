@@ -6,14 +6,11 @@ The scope is intentionally narrow: define a clean data contract and reproducible
 
 ## Current Stage
 
-Stage 3 fine-tuning entry has started with config-driven dry-run and pluggable train backends:
+Stage 5 short-horizon rollout validation is in place with deterministic harness contracts:
 
-- Manifest loading and action-alignment integration
-- Deterministic dry-run / `train_stub` / `train_noop` / `train_mock` artifact contracts
-- Train-step runner abstraction (`src/train/runner.py`) with injectable runner-factory path for staged training-loop evolution
-- Versioned mock-backend checkpoint state snapshots via `src/train/state.py` (`TrainingState`)
-- Versioned fine-tune summary schema validation via `src/train/summary.py` (`summary_v1`)
-- Versioned training metadata schema validation via `src/train/metadata.py` (`training_metadata_v1`)
+- Short-horizon rollout harness (`src/eval/rollout.py`) with typed trace/summary contracts
+- Success/failure and behavior diagnostics (`success_rate`, `mean_reward`, `action_switch_rate`, diagnostics means)
+- Config-driven rollout validation CLI (`scripts/rollout_validate.py`) that writes report artifacts
 
 ## Project Structure
 
@@ -22,6 +19,7 @@ Stage 3 fine-tuning entry has started with config-driven dry-run and pluggable t
 - `src/data/` - data contracts and validation schemas
 - `src/model/` - action alignment and mapping modules
 - `src/train/` - training runner abstractions
+- `src/eval/` - offline metrics, reports, and rollout validation
 - `tests/` - unit tests
 
 ## Quick Start
@@ -45,6 +43,20 @@ python3.12 scripts/build_dataset.py --input data/raw --output data/processed/man
 ```
 
 This creates a normalized manifest JSON file containing validated episode records and split information.
+
+### Run Rollout Validation
+
+```bash
+python3.12 -m scripts.rollout_validate --config configs/rollout_validation.json
+```
+
+Example config fields:
+
+- `output_path` (required)
+- `rollout_count`, `max_horizon`
+- `action_cycle`
+- `success_on_step`, `terminal_on_step`
+- `reward_on_success`, `reward_on_failure`
 
 ## Guiding Principles
 
