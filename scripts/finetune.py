@@ -13,7 +13,7 @@ import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 # Support both:
 # - python -m scripts.finetune (recommended)
@@ -25,7 +25,21 @@ if __package__ in {None, ""}:
 from src.data.loader import ManifestDataset
 from src.data.schema import SplitName
 from src.model.alignment import VocabularyActionAligner, align_manifest_sample
-from src.train.runner import run_train_backend_steps
+from src.train.runner import TrainingRunContext, TrainingRunner, run_train_backend_steps
+
+RunnerFactory = Callable[[str], TrainingRunner]
+
+
+def _build_train_backend_metadata(
+    *,
+    runner_backend: str,
+    mock_learning_rate: float,
+) -> dict[str, Any]:
+    """Build stable backend metadata for summaries/artifacts."""
+    metadata: dict[str, Any] = {"runner_backend": runner_backend}
+    if runner_backend == "train_mock":
+        metadata["mock_learning_rate"] = mock_learning_rate
+    return metadata
 
 
 def _normalized_mapping(raw: Mapping[str, Any]) -> dict[str, str]:
@@ -148,7 +162,7 @@ def load_config(config_path: Path, dry_run_override: bool | None = None) -> Fine
     return config
 
 
-def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
+def run_finetune(config: FineTuneConfig, runner_factory: RunnerFactory | None = None) -> dict[str, Any]:
     """Run fine-tuning entry flow with dry-run and train-stub modes."""
     dataset = ManifestDataset(config.manifest_path, split=config.split)
     aligner = VocabularyActionAligner(
@@ -177,14 +191,18 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
     unknown_ratio = (unknown_action_labels / float(total_action_labels)) if total_action_labels > 0 else 0.0
 
     mode = "dry_run" if config.dry_run else config.runner_backend
+    train_backend_metadata = _build_train_backend_metadata(
+        runner_backend=config.runner_backend,
+        mock_learning_rate=config.mock_learning_rate,
+    )
     summary = {
         "mode": mode,
         "runner_backend": config.runner_backend,
+        "train_backend_metadata": train_backend_metadata,
         "manifest_path": config.manifest_path,
         "output_dir": str(output_dir),
         "split": None if config.split is None else config.split.value,
         "train_steps": config.train_steps,
-        "runner_backend": config.runner_backend,
         "mock_learning_rate": config.mock_learning_rate,
         "processed_samples": processed_samples,
         "total_action_labels": total_action_labels,
@@ -201,14 +219,25 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
 
     if not config.dry_run:
         known_ratio = 1.0 - unknown_ratio if total_action_labels > 0 else 1.0
-        step_results = run_train_backend_steps(
-            backend=config.runner_backend,
+        context = TrainingRunContext(
             train_steps=config.train_steps,
             known_ratio=known_ratio,
             unknown_ratio=unknown_ratio,
             processed_samples=processed_samples,
             mock_learning_rate=config.mock_learning_rate,
         )
+        if runner_factory is None:
+            step_results = run_train_backend_steps(
+                backend=config.runner_backend,
+                train_steps=context.train_steps,
+                known_ratio=context.known_ratio,
+                unknown_ratio=context.unknown_ratio,
+                processed_samples=context.processed_samples,
+                mock_learning_rate=context.mock_learning_rate,
+            )
+        else:
+            runner = runner_factory(config.runner_backend)
+            step_results = runner.run(context)
 
         checkpoint_payload = {
             "mode": config.runner_backend,
@@ -230,6 +259,7 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
             "train_steps": config.train_steps,
             "step_metrics": [result.to_dict() for result in step_results],
             "runner_backend": config.runner_backend,
+            "train_backend_metadata": train_backend_metadata,
             "note": f"placeholder training metadata; backend={config.runner_backend}",
         }
         with training_metadata_path.open("w", encoding="utf-8") as fp:

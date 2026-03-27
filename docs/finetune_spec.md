@@ -55,6 +55,9 @@ Returned summary fields include:
 - `metrics_path`
 - `training_metadata_path`
 - `seed`
+- `runner_backend`
+- `mock_learning_rate`
+- `train_backend_metadata` (`dict`): backend-specific parameter snapshot for reproducibility
 
 When `save_summary=true`, summary is written to:
 
@@ -65,12 +68,13 @@ In `train_stub` mode (`dry_run=false`), placeholder artifacts are also written:
 - `output_dir/checkpoints/latest.ckpt`
 - `output_dir/metrics/training_metadata.json`
 
-`training_metadata.json` includes deterministic `step_metrics` entries:
+`training_metadata.json` includes deterministic `step_metrics` entries and backend metadata:
 
 - `step` (1-indexed integer)
 - `samples_seen` (constant per step from dry-run pass)
 - `known_ratio` (constant per step from dry-run pass)
 - `loss` (deterministic value derived from unknown ratio and step index)
+- `train_backend_metadata` (`dict`) mirrors the backend snapshot in summary
 
 If `runner_backend="train_noop"`, `step_metrics` contains deterministic zero-loss entries.
 
@@ -80,6 +84,11 @@ If `runner_backend="train_mock"`, `step_metrics` contains deterministic non-zero
 - step index
 - `mock_learning_rate`
 
+## Integration extension point
+
+`run_finetune(config, runner_factory=...)` supports injecting a custom backend resolver for tests and staged integration.
+If omitted, built-in backend dispatch is used.
+
 ## Current limitation
 
-`train_stub` does not run model optimization yet; it only validates integration and emits deterministic artifacts.
+Current backends do not perform real model optimization; they validate execution contracts and emit deterministic artifacts.
