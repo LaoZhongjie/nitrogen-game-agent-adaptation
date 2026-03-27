@@ -26,6 +26,7 @@ from src.data.loader import ManifestDataset
 from src.data.schema import SplitName
 from src.model.alignment import VocabularyActionAligner, align_manifest_sample
 from src.train.checkpoint import build_checkpoint_metadata, validate_checkpoint_metadata
+from src.train.metadata import build_training_metadata, validate_training_metadata
 from src.train.runner import TrainingRunContext, TrainingRunner, run_train_backend_steps
 from src.train.state import TrainingState, validate_training_state
 
@@ -302,20 +303,21 @@ def run_finetune(config: FineTuneConfig, runner_factory: RunnerFactory | None = 
             json.dump(checkpoint_payload, fp, indent=2)
             fp.write("\n")
 
-        training_metadata = {
-            "mode": config.runner_backend,
-            "seed": config.seed,
-            "processed_samples": processed_samples,
-            "total_action_labels": total_action_labels,
-            "unknown_action_labels": unknown_action_labels,
-            "unknown_ratio": unknown_ratio,
-            "train_steps": config.train_steps,
-            "step_metrics": [result.to_dict() for result in step_results],
-            "runner_backend": config.runner_backend,
-            "train_backend_metadata": train_backend_metadata,
-            "checkpoint_metadata": checkpoint_metadata,
-            "note": f"placeholder training metadata; backend={config.runner_backend}",
-        }
+        training_metadata = build_training_metadata(
+            mode=config.runner_backend,
+            seed=config.seed,
+            processed_samples=processed_samples,
+            total_action_labels=total_action_labels,
+            unknown_action_labels=unknown_action_labels,
+            unknown_ratio=unknown_ratio,
+            train_steps=config.train_steps,
+            step_metrics=step_results,
+            runner_backend=config.runner_backend,
+            train_backend_metadata=train_backend_metadata,
+            checkpoint_metadata=checkpoint_metadata,
+            note=f"placeholder training metadata; backend={config.runner_backend}",
+        )
+        validate_training_metadata(training_metadata)
         with training_metadata_path.open("w", encoding="utf-8") as fp:
             json.dump(training_metadata, fp, indent=2)
             fp.write("\n")

@@ -14,6 +14,11 @@ from src.train.runner import (
     run_train_stub_steps,
 )
 from src.train.checkpoint import build_checkpoint_metadata, validate_checkpoint_metadata
+from src.train.metadata import (
+    TRAINING_METADATA_SCHEMA,
+    build_training_metadata,
+    validate_training_metadata,
+)
 from src.train.state import TRAINING_STATE_SCHEMA, TrainingState, validate_training_state
 
 __all__ = [
@@ -30,6 +35,9 @@ __all__ = [
     "run_train_stub_steps",
     "build_checkpoint_metadata",
     "validate_checkpoint_metadata",
+    "TRAINING_METADATA_SCHEMA",
+    "build_training_metadata",
+    "validate_training_metadata",
     "TRAINING_STATE_SCHEMA",
     "TrainingState",
     "validate_training_state",

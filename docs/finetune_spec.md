@@ -94,6 +94,8 @@ In non-dry-run backend modes (`dry_run=false`), placeholder artifacts are also w
 
 `training_metadata.json` includes deterministic `step_metrics` entries and backend metadata:
 
+- `schema` (`str`, current `"training_metadata_v1"`)
+
 - `step` (1-indexed integer)
 - `samples_seen` (constant per step from dry-run pass)
 - `known_ratio` (constant per step from dry-run pass)

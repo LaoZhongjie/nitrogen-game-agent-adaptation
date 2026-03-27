@@ -167,6 +167,7 @@ def test_run_finetune_training_skeleton_writes_artifacts(tmp_path: Path) -> None
     training_metadata_path = Path(report["training_metadata_path"])
     assert training_metadata_path.exists()
     training_payload = json.loads(training_metadata_path.read_text(encoding="utf-8"))
+    assert training_payload["schema"] == "training_metadata_v1"
     assert training_payload["train_steps"] == 3
     assert len(training_payload["step_metrics"]) == 3
     assert training_payload["step_metrics"][0]["step"] == 1
@@ -223,6 +224,7 @@ def test_run_finetune_train_noop_backend_writes_empty_steps(tmp_path: Path) -> N
 
     training_metadata_path = Path(report["training_metadata_path"])
     training_payload = json.loads(training_metadata_path.read_text(encoding="utf-8"))
+    assert training_payload["schema"] == "training_metadata_v1"
     assert training_payload["mode"] == "train_noop"
     assert training_payload["train_steps"] == 5
     assert len(training_payload["step_metrics"]) == 5
@@ -289,6 +291,7 @@ def test_run_finetune_train_mock_backend_writes_nontrivial_steps(tmp_path: Path)
 
     training_metadata_path = Path(report["training_metadata_path"])
     training_payload = json.loads(training_metadata_path.read_text(encoding="utf-8"))
+    assert training_payload["schema"] == "training_metadata_v1"
     losses = [step["loss"] for step in training_payload["step_metrics"]]
     assert training_payload["runner_backend"] == "train_mock"
     assert len(losses) == 4
