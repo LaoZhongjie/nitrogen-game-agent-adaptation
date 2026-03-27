@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Protocol, Sequence
 
-from src.data.schema import ActionLabel
+from src.data.loader import ManifestSample
+from src.data.schema import ActionLabel, SplitName
 
 
 @dataclass(slots=True, frozen=True)
@@ -77,6 +78,17 @@ class AlignmentBatch:
 
     records: tuple[AlignedActionRecord, ...]
     summary: AlignmentSummary
+
+
+@dataclass(slots=True, frozen=True)
+class AlignedManifestSample:
+    """Manifest sample with schema-level aligned action labels."""
+
+    episode_id: str
+    clip_id: str
+    frame_paths: tuple[str, ...]
+    action_labels: tuple[ActionLabel, ...]
+    split: SplitName
 
 
 @dataclass(slots=True, frozen=True)
@@ -170,3 +182,25 @@ def align_action_texts_to_labels(
 
     aligned_actions = tuple(aligner.align(raw_action) for raw_action in raw_actions)
     return to_action_labels(aligned_actions)
+
+
+def align_manifest_sample(
+    sample: ManifestSample,
+    aligner: ActionAligner,
+    confidences: Sequence[float] | None = None,
+) -> AlignedManifestSample:
+    """Align one manifest sample into schema-level action labels."""
+    if len(sample.frame_paths) != len(sample.action_labels):
+        raise ValueError("sample frame_paths and action_labels must have equal length.")
+    labels = align_action_texts_to_labels(
+        aligner=aligner,
+        action_texts=sample.action_labels,
+        confidences=confidences,
+    )
+    return AlignedManifestSample(
+        episode_id=sample.episode_id,
+        clip_id=sample.clip_id,
+        frame_paths=sample.frame_paths,
+        action_labels=labels,
+        split=sample.split,
+    )

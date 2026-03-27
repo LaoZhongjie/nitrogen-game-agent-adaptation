@@ -6,8 +6,10 @@ import pytest
 
 from src.model.alignment import (
     AlignedActionRecord,
+    AlignedManifestSample,
     RawActionRecord,
     VocabularyActionAligner,
+    align_manifest_sample,
     align_action_texts_to_labels,
     to_action_labels,
 )
@@ -216,3 +218,43 @@ def test_align_action_texts_to_labels_respects_alias_and_confidence_floor() -> N
 
     assert [label.action_id for label in labels] == ["move_left", "other", "other"]
     assert [label.confidence for label in labels] == [0.7, 0.5, 0.9]
+
+
+def test_align_manifest_sample_preserves_split_and_frame_paths() -> None:
+    from src.data.loader import ManifestSample
+    from src.data.schema import SplitName
+
+    aligner = VocabularyActionAligner(mapping={"jump": "jump"})
+    sample = ManifestSample(
+        episode_id="ep_1",
+        clip_id="ep_1_clip_000001",
+        frame_paths=("ep_1/frames/0000.png", "ep_1/frames/0001.png"),
+        action_labels=("jump", "slide"),
+        split=SplitName.TRAIN,
+    )
+
+    aligned = align_manifest_sample(aligner=aligner, sample=sample)
+
+    assert isinstance(aligned, AlignedManifestSample)
+    assert aligned.episode_id == "ep_1"
+    assert aligned.clip_id == "ep_1_clip_000001"
+    assert aligned.frame_paths == ("ep_1/frames/0000.png", "ep_1/frames/0001.png")
+    assert aligned.split is SplitName.TRAIN
+    assert [label.action_id for label in aligned.action_labels] == ["jump", "unknown"]
+
+
+def test_align_manifest_sample_rejects_mismatched_lengths() -> None:
+    from src.data.loader import ManifestSample
+    from src.data.schema import SplitName
+
+    aligner = VocabularyActionAligner(mapping={"jump": "jump"})
+    sample = ManifestSample(
+        episode_id="ep_1",
+        clip_id="ep_1_clip_000001",
+        frame_paths=("ep_1/frames/0000.png", "ep_1/frames/0001.png"),
+        action_labels=("jump", "slide"),
+        split=SplitName.VAL,
+    )
+
+    with pytest.raises(ValueError, match="must match"):
+        align_manifest_sample(aligner=aligner, sample=sample, confidences=(0.9,))
