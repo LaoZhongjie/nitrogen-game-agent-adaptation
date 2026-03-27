@@ -123,6 +123,7 @@ def test_to_action_labels_preserves_alignment_fields() -> None:
     assert [label.action_id for label in labels] == ["jump", "move_left"]
     assert [label.action_text for label in labels] == ["Jump", "left"]
     assert [label.confidence for label in labels] == [0.7, 0.8]
+    assert all(not hasattr(label, "alignment_source") for label in labels)
 
 
 def test_low_confidence_mapping_falls_back_to_unknown() -> None:
