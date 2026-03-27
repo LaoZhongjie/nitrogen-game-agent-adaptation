@@ -25,6 +25,7 @@ if __package__ in {None, ""}:
 from src.data.loader import ManifestDataset
 from src.data.schema import SplitName
 from src.model.alignment import VocabularyActionAligner, align_manifest_sample
+from src.train.runner import run_train_backend_steps
 
 
 def _normalized_mapping(raw: Mapping[str, Any]) -> dict[str, str]:
@@ -55,6 +56,8 @@ class FineTuneConfig:
     split: SplitName | None = None
     max_samples: int | None = None
     train_steps: int = 1
+    runner_backend: str = "train_stub"
+    mock_learning_rate: float = 0.05
     dry_run: bool = True
     save_summary: bool = True
     action_mapping: Mapping[str, str] = field(default_factory=dict)
@@ -72,6 +75,10 @@ class FineTuneConfig:
             raise ValueError("max_samples must be > 0 when provided.")
         if self.train_steps <= 0:
             raise ValueError("train_steps must be > 0.")
+        if self.runner_backend not in {"train_stub", "train_noop", "train_mock"}:
+            raise ValueError("runner_backend must be one of: train_stub, train_noop, train_mock.")
+        if self.mock_learning_rate <= 0.0:
+            raise ValueError("mock_learning_rate must be > 0.0.")
         if not self.unknown_action_id.strip():
             raise ValueError("unknown_action_id must be non-empty.")
         if not 0.0 <= self.confidence_floor <= 1.0:
@@ -111,6 +118,8 @@ def load_config(config_path: Path, dry_run_override: bool | None = None) -> Fine
         split=split,
         max_samples=int(raw["max_samples"]) if raw.get("max_samples") is not None else None,
         train_steps=int(raw.get("train_steps", 1)),
+        runner_backend=str(raw.get("runner_backend", "train_stub")),
+        mock_learning_rate=float(raw.get("mock_learning_rate", 0.05)),
         dry_run=bool(raw.get("dry_run", True)),
         save_summary=bool(raw.get("save_summary", True)),
         action_mapping=mapping,
@@ -126,6 +135,8 @@ def load_config(config_path: Path, dry_run_override: bool | None = None) -> Fine
             split=config.split,
             max_samples=config.max_samples,
             train_steps=config.train_steps,
+            runner_backend=config.runner_backend,
+            mock_learning_rate=config.mock_learning_rate,
             dry_run=dry_run_override,
             save_summary=config.save_summary,
             action_mapping=config.action_mapping,
@@ -165,13 +176,16 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
     training_metadata_path = output_dir / "metrics" / "training_metadata.json"
     unknown_ratio = (unknown_action_labels / float(total_action_labels)) if total_action_labels > 0 else 0.0
 
-    mode = "dry_run" if config.dry_run else "train_stub"
+    mode = "dry_run" if config.dry_run else config.runner_backend
     summary = {
         "mode": mode,
+        "runner_backend": config.runner_backend,
         "manifest_path": config.manifest_path,
         "output_dir": str(output_dir),
         "split": None if config.split is None else config.split.value,
         "train_steps": config.train_steps,
+        "runner_backend": config.runner_backend,
+        "mock_learning_rate": config.mock_learning_rate,
         "processed_samples": processed_samples,
         "total_action_labels": total_action_labels,
         "unknown_action_labels": unknown_action_labels,
@@ -186,39 +200,37 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not config.dry_run:
-        step_metrics: list[dict[str, float | int]] = []
-        base_loss = 1.0 + unknown_ratio
         known_ratio = 1.0 - unknown_ratio if total_action_labels > 0 else 1.0
-        for step_idx in range(config.train_steps):
-            step = step_idx + 1
-            step_metrics.append(
-                {
-                    "step": step,
-                    "loss": base_loss / float(step),
-                    "known_ratio": known_ratio,
-                }
-            )
+        step_results = run_train_backend_steps(
+            backend=config.runner_backend,
+            train_steps=config.train_steps,
+            known_ratio=known_ratio,
+            unknown_ratio=unknown_ratio,
+            processed_samples=processed_samples,
+            mock_learning_rate=config.mock_learning_rate,
+        )
 
         checkpoint_payload = {
-            "mode": "train_stub",
+            "mode": config.runner_backend,
             "seed": config.seed,
             "processed_samples": processed_samples,
-            "note": "placeholder checkpoint artifact; optimization loop not implemented",
+            "note": f"placeholder checkpoint artifact; backend={config.runner_backend}",
         }
         with checkpoint_path.open("w", encoding="utf-8") as fp:
             json.dump(checkpoint_payload, fp, indent=2)
             fp.write("\n")
 
         training_metadata = {
-            "mode": "train_stub",
+            "mode": config.runner_backend,
             "seed": config.seed,
             "processed_samples": processed_samples,
             "total_action_labels": total_action_labels,
             "unknown_action_labels": unknown_action_labels,
             "unknown_ratio": unknown_ratio,
             "train_steps": config.train_steps,
-            "step_metrics": step_metrics,
-            "note": "placeholder training metadata; optimization loop not implemented",
+            "step_metrics": [result.to_dict() for result in step_results],
+            "runner_backend": config.runner_backend,
+            "note": f"placeholder training metadata; backend={config.runner_backend}",
         }
         with training_metadata_path.open("w", encoding="utf-8") as fp:
             json.dump(training_metadata, fp, indent=2)
