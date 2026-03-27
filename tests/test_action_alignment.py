@@ -114,3 +114,46 @@ def test_to_action_labels_preserves_alignment_fields() -> None:
     assert [label.action_id for label in labels] == ["jump", "move_left"]
     assert [label.action_text for label in labels] == ["Jump", "left"]
     assert [label.confidence for label in labels] == [0.7, 0.8]
+
+
+def test_low_confidence_mapping_falls_back_to_unknown() -> None:
+    aligner = VocabularyActionAligner(
+        mapping={"jump": "jump"},
+        unknown_action_id="other",
+        confidence_floor=0.6,
+    )
+
+    aligned = aligner.align(RawActionRecord(action_text="jump", confidence=0.59))
+
+    assert aligned.action_id == "other"
+
+
+def test_confidence_floor_boundary_is_inclusive() -> None:
+    aligner = VocabularyActionAligner(
+        mapping={"jump": "jump"},
+        unknown_action_id="other",
+        confidence_floor=0.6,
+    )
+
+    aligned = aligner.align(RawActionRecord(action_text="jump", confidence=0.6))
+
+    assert aligned.action_id == "jump"
+
+
+def test_align_many_summary_reflects_confidence_floor_unknowns() -> None:
+    aligner = VocabularyActionAligner(
+        mapping={"jump": "jump", "left": "move_left"},
+        unknown_action_id="other",
+        confidence_floor=0.5,
+    )
+    raw_actions = [
+        RawActionRecord(action_text="jump", confidence=0.9),
+        RawActionRecord(action_text="left", confidence=0.49),
+        RawActionRecord(action_text="slide", confidence=0.8),
+    ]
+
+    batch = aligner.align_many(raw_actions)
+
+    assert [record.action_id for record in batch.records] == ["jump", "other", "other"]
+    assert batch.summary.known_count == 1
+    assert batch.summary.unknown_count == 2

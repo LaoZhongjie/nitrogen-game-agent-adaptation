@@ -83,10 +83,13 @@ class VocabularyActionAligner:
     mapping: Mapping[str, str]
     aliases: Mapping[str, str] | None = None
     unknown_action_id: str = "unknown"
+    confidence_floor: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.unknown_action_id.strip():
             raise ValueError("unknown_action_id must be non-empty.")
+        if not 0.0 <= self.confidence_floor <= 1.0:
+            raise ValueError("confidence_floor must be in range [0.0, 1.0].")
 
     def align(self, raw_action: RawActionRecord) -> AlignedActionRecord:
         """Map raw action text to canonical action ID, with unknown fallback."""
@@ -96,6 +99,8 @@ class VocabularyActionAligner:
             alias_normalized = self.aliases.get(normalized)
             if alias_normalized is not None:
                 action_id = self.mapping.get(alias_normalized)
+        if action_id is not None and raw_action.confidence < self.confidence_floor:
+            action_id = None
         if action_id is None:
             action_id = self.unknown_action_id
         return AlignedActionRecord(
