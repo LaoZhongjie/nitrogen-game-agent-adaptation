@@ -20,6 +20,17 @@ from src.eval.pipeline import (
     build_evaluation_records_from_manifest_predictions,
     load_prediction_records,
 )
+from src.eval.rollout import (
+    MockRolloutEnvironment,
+    MockRolloutPolicy,
+    RolloutEnvironment,
+    RolloutPolicy,
+    RolloutStep,
+    RolloutSummary,
+    RolloutTrace,
+    run_short_horizon_rollouts,
+    summarize_rollouts,
+)
 
 __all__ = [
     "EvaluationRecord",
@@ -36,4 +47,13 @@ __all__ = [
     "PredictionRecord",
     "build_evaluation_records_from_manifest_predictions",
     "load_prediction_records",
+    "RolloutStep",
+    "RolloutTrace",
+    "RolloutSummary",
+    "RolloutPolicy",
+    "RolloutEnvironment",
+    "MockRolloutPolicy",
+    "MockRolloutEnvironment",
+    "run_short_horizon_rollouts",
+    "summarize_rollouts",
 ]
