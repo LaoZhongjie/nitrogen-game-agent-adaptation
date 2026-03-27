@@ -1,0 +1,2 @@
+"""Model and adaptation interfaces."""
+

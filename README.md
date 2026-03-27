@@ -6,12 +6,11 @@ The scope is intentionally narrow: define a clean data contract and reproducible
 
 ## Current Stage
 
-This initial stage focuses on dataset interfaces and contracts:
+Stage 2 has started with a minimal action-alignment module:
 
-- Document project goals and staged plan
-- Define dataset schema (episodes, clips, frames, actions, splits)
-- Implement a minimal dataset build script
-- Add tests for schema validation
+- Alignment interface and baseline vocabulary mapper
+- Unknown-action fallback behavior
+- Unit tests for mapping and confidence validation
 
 ## Project Structure
 
