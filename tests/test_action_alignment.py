@@ -36,3 +36,32 @@ def test_raw_action_rejects_invalid_confidence() -> None:
 def test_aligner_rejects_empty_unknown_action_id() -> None:
     with pytest.raises(ValueError, match="non-empty"):
         VocabularyActionAligner(mapping={"jump": "jump"}, unknown_action_id=" ")
+
+
+def test_align_many_returns_empty_summary_for_empty_input() -> None:
+    aligner = VocabularyActionAligner(mapping={"jump": "jump"})
+
+    batch = aligner.align_many([])
+
+    assert batch.records == ()
+    assert batch.summary.total_count == 0
+    assert batch.summary.known_count == 0
+    assert batch.summary.unknown_count == 0
+    assert batch.summary.mean_confidence == 0.0
+
+
+def test_align_many_returns_mixed_known_unknown_summary() -> None:
+    aligner = VocabularyActionAligner(mapping={"jump": "jump", "left": "move_left"}, unknown_action_id="other")
+    raw_actions = [
+        RawActionRecord(action_text="jump", confidence=1.0),
+        RawActionRecord(action_text="slide", confidence=0.4),
+        RawActionRecord(action_text="LEFT", confidence=0.6),
+    ]
+
+    batch = aligner.align_many(raw_actions)
+
+    assert [record.action_id for record in batch.records] == ["jump", "other", "move_left"]
+    assert batch.summary.total_count == 3
+    assert batch.summary.known_count == 2
+    assert batch.summary.unknown_count == 1
+    assert batch.summary.mean_confidence == pytest.approx((1.0 + 0.4 + 0.6) / 3.0)
