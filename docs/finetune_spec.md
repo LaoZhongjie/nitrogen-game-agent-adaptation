@@ -34,6 +34,7 @@ Optional:
 - `confidence_floor` (`float`, default `0.0`)
 - `seed` (`int`, default `0`)
 - `train_steps` (`int`, default `1`): pseudo training steps in `train_stub` mode
+- `runner_backend` (`"train_stub" | "train_noop"`, default `"train_stub"`): runner backend used when `dry_run=false`
 
 Normalization behavior:
 
@@ -63,12 +64,14 @@ In `train_stub` mode (`dry_run=false`), placeholder artifacts are also written:
 - `output_dir/checkpoints/latest.ckpt`
 - `output_dir/metrics/training_metadata.json`
 
-`training_metadata.json` includes deterministic `steps` entries:
+`training_metadata.json` includes deterministic `step_metrics` entries:
 
 - `step` (1-indexed integer)
 - `samples_seen` (constant per step from dry-run pass)
-- `unknown_ratio` (constant per step from dry-run pass)
-- `pseudo_loss` (deterministic value: `1.0 / (step + seed)` )
+- `known_ratio` (constant per step from dry-run pass)
+- `loss` (deterministic value derived from unknown ratio and step index)
+
+If `runner_backend="train_noop"`, `step_metrics` is empty and a `runner_note` field explains that no train steps were executed.
 
 ## Current limitation
 

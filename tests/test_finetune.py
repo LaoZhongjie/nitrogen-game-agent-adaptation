@@ -162,6 +162,53 @@ def test_run_finetune_training_skeleton_writes_artifacts(tmp_path: Path) -> None
     assert training_payload["step_metrics"][0]["samples_seen"] == report["processed_samples"]
 
 
+def test_run_finetune_train_noop_backend_writes_empty_steps(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw"
+    episode_dir = raw_root / "ep_001"
+    frame_names = [f"{i:04d}.png" for i in range(2)]
+    _touch_frames(episode_dir / "frames", frame_names)
+    _write_actions_json(episode_dir, frame_names, ["jump", "slide"])
+
+    from scripts.build_dataset import BuildDatasetConfig, build_manifest
+    from src.data.schema import SplitPolicy
+
+    manifest = build_manifest(
+        BuildDatasetConfig(
+            input_root=str(raw_root),
+            output_manifest_path=str(tmp_path / "manifest.json"),
+            seed=0,
+            split_policy=SplitPolicy(train=0.9999998, val=1e-7, test=1e-7),
+            clip_length=2,
+            stride=2,
+        )
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+    cfg = FineTuneConfig(
+        manifest_path=str(manifest_path),
+        output_dir=str(tmp_path / "outputs"),
+        split=SplitName.TRAIN,
+        action_mapping={"jump": "jump"},
+        dry_run=False,
+        save_summary=True,
+        train_steps=5,
+        runner_backend="train_noop",
+        seed=7,
+    )
+    report = run_finetune(cfg)
+
+    assert report["mode"] == "train_noop"
+    assert report["runner_backend"] == "train_noop"
+
+    training_metadata_path = Path(report["training_metadata_path"])
+    training_payload = json.loads(training_metadata_path.read_text(encoding="utf-8"))
+    assert training_payload["mode"] == "train_noop"
+    assert training_payload["train_steps"] == 5
+    assert len(training_payload["step_metrics"]) == 5
+    assert all(step["loss"] == 0.0 for step in training_payload["step_metrics"])
+
+
 def test_load_config_supports_inline_mapping_and_aliases(tmp_path: Path) -> None:
     config_path = tmp_path / "finetune_config.json"
     config_path.write_text(
@@ -172,6 +219,7 @@ def test_load_config_supports_inline_mapping_and_aliases(tmp_path: Path) -> None
                 "split": "train",
                 "dry_run": True,
                 "save_summary": False,
+                "runner_backend": "train_noop",
                 "action_mapping": {"LEFT": "move_left", "jump": "jump"},
                 "action_aliases": {"move left": "left"},
             }
@@ -186,6 +234,7 @@ def test_load_config_supports_inline_mapping_and_aliases(tmp_path: Path) -> None
     assert cfg.output_dir == "outputs/run_001"
     assert cfg.split is SplitName.TRAIN
     assert cfg.save_summary is False
+    assert cfg.runner_backend == "train_noop"
     assert cfg.action_mapping == {"left": "move_left", "jump": "jump"}
     assert cfg.action_aliases == {"move left": "left"}
 
