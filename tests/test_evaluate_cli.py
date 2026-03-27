@@ -62,7 +62,6 @@ def _build_manifest_with_one_clip(path: Path) -> Path:
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest_path
 
-
 def test_load_evaluation_records_with_split_filter(tmp_path: Path) -> None:
     input_path = tmp_path / "eval" / "records.json"
     _write_records(input_path)
@@ -121,7 +120,6 @@ def test_evaluate_cli_main_emits_and_writes_report(tmp_path: Path, monkeypatch: 
     assert printed["summary"]["total_clip_count"] == 1
     assert printed["summary"]["total_action_count"] == 3
     assert output_path.exists()
-
 
 def test_evaluate_cli_manifest_predictions_mode(tmp_path: Path, monkeypatch: object, capsys: object) -> None:
     manifest_path = _build_manifest_with_one_clip(tmp_path)
@@ -225,4 +223,3 @@ def test_evaluate_cli_manifest_predictions_rejects_missing_coverage_by_default(
 
     with pytest.raises(ValueError, match="missing predictions"):
         evaluate_main()
-
