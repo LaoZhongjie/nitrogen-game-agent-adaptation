@@ -29,6 +29,7 @@ class AlignedActionRecord:
     action_id: str
     action_text: str
     confidence: float
+    alignment_source: str
 
     def __post_init__(self) -> None:
         if not self.action_id.strip():
@@ -37,6 +38,8 @@ class AlignedActionRecord:
             raise ValueError("action_text must be non-empty.")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("confidence must be in range [0.0, 1.0].")
+        if self.alignment_source not in {"direct", "alias", "confidence_floor", "unknown"}:
+            raise ValueError("alignment_source must be one of: direct, alias, confidence_floor, unknown.")
 
 
 class ActionAligner(Protocol):
@@ -95,18 +98,23 @@ class VocabularyActionAligner:
         """Map raw action text to canonical action ID, with unknown fallback."""
         normalized = raw_action.action_text.strip().lower()
         action_id = self.mapping.get(normalized)
+        alignment_source = "direct" if action_id is not None else "unknown"
         if action_id is None and self.aliases is not None:
             alias_normalized = self.aliases.get(normalized)
             if alias_normalized is not None:
                 action_id = self.mapping.get(alias_normalized)
+                if action_id is not None:
+                    alignment_source = "alias"
         if action_id is not None and raw_action.confidence < self.confidence_floor:
             action_id = None
+            alignment_source = "confidence_floor"
         if action_id is None:
             action_id = self.unknown_action_id
         return AlignedActionRecord(
             action_id=action_id,
             action_text=raw_action.action_text,
             confidence=raw_action.confidence,
+            alignment_source=alignment_source,
         )
 
     def align_many(self, raw_actions: Sequence[RawActionRecord]) -> AlignmentBatch:

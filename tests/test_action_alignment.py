@@ -15,6 +15,7 @@ def test_vocabulary_aligner_maps_known_action() -> None:
     assert aligned.action_id == "jump"
     assert aligned.action_text == "Jump"
     assert aligned.confidence == 0.9
+    assert aligned.alignment_source == "direct"
 
 
 def test_vocabulary_aligner_falls_back_to_unknown() -> None:
@@ -26,6 +27,7 @@ def test_vocabulary_aligner_falls_back_to_unknown() -> None:
     aligned = aligner.align(RawActionRecord(action_text="slide", confidence=0.5))
 
     assert aligned.action_id == "other"
+    assert aligned.alignment_source == "unknown"
 
 
 def test_raw_action_rejects_invalid_confidence() -> None:
@@ -77,6 +79,7 @@ def test_aliases_map_to_canonical_token_before_lookup() -> None:
     aligned = aligner.align(RawActionRecord(action_text="Move Left", confidence=0.8))
 
     assert aligned.action_id == "move_left"
+    assert aligned.alignment_source == "alias"
 
 
 def test_aliases_fall_back_when_alias_not_found() -> None:
@@ -101,12 +104,18 @@ def test_mapping_takes_precedence_over_alias_lookup() -> None:
     aligned = aligner.align(RawActionRecord(action_text="Move Left", confidence=1.0))
 
     assert aligned.action_id == "strafe_left"
+    assert aligned.alignment_source == "direct"
 
 
 def test_to_action_labels_preserves_alignment_fields() -> None:
     aligned_actions = (
-        AlignedActionRecord(action_id="jump", action_text="Jump", confidence=0.7),
-        AlignedActionRecord(action_id="move_left", action_text="left", confidence=0.8),
+        AlignedActionRecord(action_id="jump", action_text="Jump", confidence=0.7, alignment_source="direct"),
+        AlignedActionRecord(
+            action_id="move_left",
+            action_text="left",
+            confidence=0.8,
+            alignment_source="alias",
+        ),
     )
 
     labels = to_action_labels(aligned_actions)
@@ -126,6 +135,7 @@ def test_low_confidence_mapping_falls_back_to_unknown() -> None:
     aligned = aligner.align(RawActionRecord(action_text="jump", confidence=0.59))
 
     assert aligned.action_id == "other"
+    assert aligned.alignment_source == "confidence_floor"
 
 
 def test_confidence_floor_boundary_is_inclusive() -> None:
@@ -155,5 +165,6 @@ def test_align_many_summary_reflects_confidence_floor_unknowns() -> None:
     batch = aligner.align_many(raw_actions)
 
     assert [record.action_id for record in batch.records] == ["jump", "other", "other"]
+    assert [record.alignment_source for record in batch.records] == ["direct", "confidence_floor", "unknown"]
     assert batch.summary.known_count == 1
     assert batch.summary.unknown_count == 2
