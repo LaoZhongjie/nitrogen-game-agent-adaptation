@@ -7,6 +7,7 @@ from scripts.finetune import FineTuneConfig, load_config, run_finetune
 from src.train.runner import TrainingRunContext, TrainingRunner, TrainingStepResult
 from src.data.schema import SplitName
 from src.train.state import TRAINING_STATE_SCHEMA, TrainingState
+from src.train.summary import SUMMARY_SCHEMA
 
 
 def _touch_frames(frames_dir: Path, frame_names: list[str]) -> None:
@@ -55,6 +56,7 @@ def test_run_dry_run_reports_counts_and_checkpoint_dir(tmp_path: Path) -> None:
     )
     report = run_finetune(cfg)
 
+    assert report["schema"] == SUMMARY_SCHEMA
     assert report["split"] == "train"
     assert report["processed_samples"] == 1
     assert report["total_action_labels"] == 4
@@ -99,6 +101,7 @@ def test_run_finetune_persists_summary_metrics_file(tmp_path: Path) -> None:
     metrics_path = Path(report["metrics_path"])
     assert metrics_path.exists()
     metrics_payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert metrics_payload["schema"] == SUMMARY_SCHEMA
     assert metrics_payload["processed_samples"] == report["processed_samples"]
     assert metrics_payload["unknown_action_labels"] == report["unknown_action_labels"]
     assert "train_backend_metadata" in metrics_payload
@@ -144,6 +147,7 @@ def test_run_finetune_training_skeleton_writes_artifacts(tmp_path: Path) -> None
     metrics_path = Path(report["metrics_path"])
 
     assert report["mode"] == "train_stub"
+    assert report["schema"] == SUMMARY_SCHEMA
     assert report["seed"] == 11
     assert checkpoint_path.exists()
     assert metrics_path.exists()
@@ -162,6 +166,7 @@ def test_run_finetune_training_skeleton_writes_artifacts(tmp_path: Path) -> None
     assert len(ck_meta["state_digest"]) == 64
     assert "state" not in checkpoint_payload
     assert metrics_payload["mode"] == "train_stub"
+    assert metrics_payload["schema"] == SUMMARY_SCHEMA
     assert metrics_payload["processed_samples"] == report["processed_samples"]
 
     training_metadata_path = Path(report["training_metadata_path"])
@@ -213,6 +218,7 @@ def test_run_finetune_train_noop_backend_writes_empty_steps(tmp_path: Path) -> N
 
     assert report["mode"] == "train_noop"
     assert report["runner_backend"] == "train_noop"
+    assert report["schema"] == SUMMARY_SCHEMA
 
     checkpoint_payload = json.loads(Path(report["checkpoint_path"]).read_text(encoding="utf-8"))
     assert checkpoint_payload["schema"] == "checkpoint_payload_v1"
@@ -270,6 +276,7 @@ def test_run_finetune_train_mock_backend_writes_nontrivial_steps(tmp_path: Path)
 
     assert report["mode"] == "train_mock"
     assert report["runner_backend"] == "train_mock"
+    assert report["schema"] == SUMMARY_SCHEMA
     assert report["mock_learning_rate"] == 0.2
     assert report["train_backend_metadata"]["mock_learning_rate"] == 0.2
 

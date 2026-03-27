@@ -19,6 +19,7 @@ from src.train.metadata import (
     build_training_metadata,
     validate_training_metadata,
 )
+from src.train.summary import SUMMARY_SCHEMA, build_summary_payload, validate_summary_payload
 from src.train.state import TRAINING_STATE_SCHEMA, TrainingState, validate_training_state
 
 __all__ = [
@@ -38,6 +39,9 @@ __all__ = [
     "TRAINING_METADATA_SCHEMA",
     "build_training_metadata",
     "validate_training_metadata",
+    "SUMMARY_SCHEMA",
+    "build_summary_payload",
+    "validate_summary_payload",
     "TRAINING_STATE_SCHEMA",
     "TrainingState",
     "validate_training_state",

@@ -29,6 +29,7 @@ from src.train.checkpoint import build_checkpoint_metadata, validate_checkpoint_
 from src.train.metadata import build_training_metadata, validate_training_metadata
 from src.train.runner import TrainingRunContext, TrainingRunner, run_train_backend_steps
 from src.train.state import TrainingState, validate_training_state
+from src.train.summary import build_summary_payload, validate_summary_payload
 
 RunnerFactory = Callable[[str], TrainingRunner]
 
@@ -224,25 +225,26 @@ def run_finetune(config: FineTuneConfig, runner_factory: RunnerFactory | None = 
         runner_backend=config.runner_backend,
         mock_learning_rate=config.mock_learning_rate,
     )
-    summary = {
-        "mode": mode,
-        "runner_backend": config.runner_backend,
-        "train_backend_metadata": train_backend_metadata,
-        "checkpoint_version": CHECKPOINT_VERSION,
-        "manifest_path": config.manifest_path,
-        "output_dir": str(output_dir),
-        "split": None if config.split is None else config.split.value,
-        "train_steps": config.train_steps,
-        "mock_learning_rate": config.mock_learning_rate,
-        "processed_samples": processed_samples,
-        "total_action_labels": total_action_labels,
-        "unknown_action_labels": unknown_action_labels,
-        "unknown_ratio": unknown_ratio,
-        "checkpoint_path": str(checkpoint_path),
-        "metrics_path": str(metrics_path),
-        "training_metadata_path": str(training_metadata_path),
-        "seed": config.seed,
-    }
+    summary = build_summary_payload(
+        mode=mode,
+        runner_backend=config.runner_backend,
+        train_backend_metadata=train_backend_metadata,
+        checkpoint_version=CHECKPOINT_VERSION,
+        manifest_path=config.manifest_path,
+        output_dir=str(output_dir),
+        split=None if config.split is None else config.split.value,
+        train_steps=config.train_steps,
+        mock_learning_rate=config.mock_learning_rate,
+        processed_samples=processed_samples,
+        total_action_labels=total_action_labels,
+        unknown_action_labels=unknown_action_labels,
+        unknown_ratio=unknown_ratio,
+        checkpoint_path=str(checkpoint_path),
+        metrics_path=str(metrics_path),
+        training_metadata_path=str(training_metadata_path),
+        seed=config.seed,
+    )
+    validate_summary_payload(summary)
 
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)

@@ -48,6 +48,7 @@ Normalization behavior:
 
 Returned summary fields include:
 
+- `schema` (`str`, current `"summary_v1"`)
 - `mode` (`"dry_run"` or configured backend name)
 - `processed_samples`
 - `total_action_labels`
