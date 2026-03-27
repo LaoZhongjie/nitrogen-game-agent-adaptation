@@ -13,7 +13,7 @@ import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 # Support both:
 # - python -m scripts.finetune (recommended)
@@ -25,7 +25,9 @@ if __package__ in {None, ""}:
 from src.data.loader import ManifestDataset
 from src.data.schema import SplitName
 from src.model.alignment import VocabularyActionAligner, align_manifest_sample
-from src.train.runner import run_train_backend_steps
+from src.train.runner import TrainingRunContext, TrainingRunner, run_train_backend_steps
+
+RunnerFactory = Callable[[str], TrainingRunner]
 
 
 def _normalized_mapping(raw: Mapping[str, Any]) -> dict[str, str]:
@@ -148,7 +150,7 @@ def load_config(config_path: Path, dry_run_override: bool | None = None) -> Fine
     return config
 
 
-def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
+def run_finetune(config: FineTuneConfig, runner_factory: RunnerFactory | None = None) -> dict[str, Any]:
     """Run fine-tuning entry flow with dry-run and train-stub modes."""
     dataset = ManifestDataset(config.manifest_path, split=config.split)
     aligner = VocabularyActionAligner(
@@ -200,14 +202,25 @@ def run_finetune(config: FineTuneConfig) -> dict[str, Any]:
 
     if not config.dry_run:
         known_ratio = 1.0 - unknown_ratio if total_action_labels > 0 else 1.0
-        step_results = run_train_backend_steps(
-            backend=config.runner_backend,
+        context = TrainingRunContext(
             train_steps=config.train_steps,
             known_ratio=known_ratio,
             unknown_ratio=unknown_ratio,
             processed_samples=processed_samples,
             mock_learning_rate=config.mock_learning_rate,
         )
+        if runner_factory is None:
+            step_results = run_train_backend_steps(
+                backend=config.runner_backend,
+                train_steps=context.train_steps,
+                known_ratio=context.known_ratio,
+                unknown_ratio=context.unknown_ratio,
+                processed_samples=context.processed_samples,
+                mock_learning_rate=context.mock_learning_rate,
+            )
+        else:
+            runner = runner_factory(config.runner_backend)
+            step_results = runner.run(context)
 
         checkpoint_payload = {
             "mode": config.runner_backend,

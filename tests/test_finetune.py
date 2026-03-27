@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from scripts.finetune import FineTuneConfig, load_config, run_finetune
+from src.train.runner import TrainingRunContext, TrainingRunner, TrainingStepResult
 from src.data.schema import SplitName
 
 
@@ -257,6 +258,62 @@ def test_run_finetune_train_mock_backend_writes_nontrivial_steps(tmp_path: Path)
     assert len(losses) == 4
     assert losses == sorted(losses, reverse=True)
     assert losses[0] > losses[-1]
+    assert report["mock_learning_rate"] == 0.2
+
+
+def test_run_finetune_supports_injected_runner_factory(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw"
+    episode_dir = raw_root / "ep_001"
+    frame_names = [f"{i:04d}.png" for i in range(2)]
+    _touch_frames(episode_dir / "frames", frame_names)
+    _write_actions_json(episode_dir, frame_names, ["jump", "slide"])
+
+    from scripts.build_dataset import BuildDatasetConfig, build_manifest
+    from src.data.schema import SplitPolicy
+
+    manifest = build_manifest(
+        BuildDatasetConfig(
+            input_root=str(raw_root),
+            output_manifest_path=str(tmp_path / "manifest.json"),
+            seed=0,
+            split_policy=SplitPolicy(train=0.9999998, val=1e-7, test=1e-7),
+            clip_length=2,
+            stride=2,
+        )
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+    class _InjectedRunner:
+        def run(self, context: TrainingRunContext) -> list[TrainingStepResult]:
+            return [
+                TrainingStepResult(
+                    step=step_idx + 1,
+                    loss=42.0,
+                    known_ratio=context.known_ratio,
+                    samples_seen=context.processed_samples,
+                )
+                for step_idx in range(context.train_steps)
+            ]
+
+    def _factory(_: str) -> TrainingRunner:
+        return _InjectedRunner()
+
+    cfg = FineTuneConfig(
+        manifest_path=str(manifest_path),
+        output_dir=str(tmp_path / "outputs"),
+        split=SplitName.TRAIN,
+        action_mapping={"jump": "jump"},
+        dry_run=False,
+        save_summary=True,
+        train_steps=3,
+        runner_backend="train_stub",
+    )
+
+    report = run_finetune(cfg, runner_factory=_factory)
+    training_payload = json.loads(Path(report["training_metadata_path"]).read_text(encoding="utf-8"))
+
+    assert all(step["loss"] == 42.0 for step in training_payload["step_metrics"])
 
 
 def test_load_config_supports_inline_mapping_and_aliases(tmp_path: Path) -> None:
