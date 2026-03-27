@@ -15,15 +15,29 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(repo_root))
 
 from src.data.schema import SplitName
-from src.eval.report import evaluate_records_file
+from src.eval.pipeline import build_evaluation_records_from_manifest_predictions, load_prediction_records
+from src.eval.report import build_evaluation_report, evaluate_records_file, write_evaluation_report
 
 
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for offline evaluation report generation."""
     parser = argparse.ArgumentParser(description="Generate offline evaluation report from prediction records.")
-    parser.add_argument("--input", required=True, help="Path to evaluation records JSON array.")
+    parser.add_argument("--input", help="Path to evaluation records JSON array.")
+    parser.add_argument(
+        "--manifest",
+        help="Path to dataset manifest JSON. Required when using --predictions mode.",
+    )
+    parser.add_argument(
+        "--predictions",
+        help="Path to prediction records JSON array. Requires --manifest.",
+    )
     parser.add_argument("--output", required=True, help="Path to output evaluation report JSON.")
     parser.add_argument("--split", choices=["train", "val", "test"], default=None, help="Optional split filter.")
+    parser.add_argument(
+        "--allow-missing-clips",
+        action="store_true",
+        help="Allow manifest clips without predictions in --manifest/--predictions mode.",
+    )
     return parser.parse_args()
 
 
@@ -31,11 +45,32 @@ def main() -> None:
     """CLI entry point."""
     args = parse_args()
     split = None if args.split is None else SplitName(args.split)
-    report = evaluate_records_file(
-        input_records_path=str(args.input),
-        output_report_path=str(args.output),
-        split=split,
-    )
+    use_manifest_prediction_mode = args.manifest is not None or args.predictions is not None
+    if use_manifest_prediction_mode:
+        if args.manifest is None or args.predictions is None:
+            raise ValueError("both --manifest and --predictions are required together.")
+        predictions = load_prediction_records(args.predictions)
+        records = build_evaluation_records_from_manifest_predictions(
+            manifest_path=args.manifest,
+            predictions=predictions,
+            split=split,
+            require_all_clips=not bool(args.allow_missing_clips),
+        )
+        report = build_evaluation_report(
+            records=records,
+            input_records_path=str(args.predictions),
+            output_report_path=str(args.output),
+            split=split,
+        )
+        write_evaluation_report(report)
+    else:
+        if args.input is None:
+            raise ValueError("either --input or (--manifest and --predictions) must be provided.")
+        report = evaluate_records_file(
+            input_records_path=str(args.input),
+            output_report_path=str(args.output),
+            split=split,
+        )
     payload = {
         "schema_version": report.schema_version,
         "evaluated_split": report.evaluated_split,

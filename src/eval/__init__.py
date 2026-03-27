@@ -15,6 +15,11 @@ from src.eval.report import (
     load_evaluation_records,
     write_evaluation_report,
 )
+from src.eval.pipeline import (
+    PredictionRecord,
+    build_evaluation_records_from_manifest_predictions,
+    load_prediction_records,
+)
 
 __all__ = [
     "EvaluationRecord",
@@ -28,4 +33,7 @@ __all__ = [
     "evaluate_records_file",
     "load_evaluation_records",
     "write_evaluation_report",
+    "PredictionRecord",
+    "build_evaluation_records_from_manifest_predictions",
+    "load_prediction_records",
 ]
