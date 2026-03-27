@@ -371,3 +371,16 @@ def test_load_config_supports_file_based_mapping_and_aliases(tmp_path: Path) -> 
     assert cfg.action_mapping == {"jump": "jump", "left": "move_left"}
     assert cfg.action_aliases == {"move left": "left"}
 
+
+def test_finetune_config_rejects_non_positive_mock_learning_rate() -> None:
+    try:
+        FineTuneConfig(
+            manifest_path="data/processed/manifest.json",
+            output_dir="outputs/run_bad_lr",
+            mock_learning_rate=0.0,
+        )
+    except ValueError as exc:
+        assert "mock_learning_rate must be > 0.0." in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for non-positive mock_learning_rate.")
+

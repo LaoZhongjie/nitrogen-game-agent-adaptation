@@ -80,6 +80,11 @@ If `runner_backend="train_mock"`, `step_metrics` contains deterministic non-zero
 - step index
 - `mock_learning_rate`
 
+## Integration extension point
+
+`run_finetune(config, runner_factory=...)` supports injecting a custom backend resolver for tests and staged integration.
+If omitted, built-in backend dispatch is used.
+
 ## Current limitation
 
-`train_stub` does not run model optimization yet; it only validates integration and emits deterministic artifacts.
+Current backends do not perform real model optimization; they validate execution contracts and emit deterministic artifacts.

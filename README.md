@@ -6,11 +6,11 @@ The scope is intentionally narrow: define a clean data contract and reproducible
 
 ## Current Stage
 
-Stage 3 fine-tuning entry has started with config-driven dry-run and train-stub flows:
+Stage 3 fine-tuning entry has started with config-driven dry-run and pluggable train backends:
 
 - Manifest loading and action-alignment integration
-- Deterministic dry-run and train-stub artifact contracts
-- Train-step runner abstraction (`src/train/runner.py`) for staged training-loop evolution
+- Deterministic dry-run / `train_stub` / `train_noop` / `train_mock` artifact contracts
+- Train-step runner abstraction (`src/train/runner.py`) with injectable runner-factory path for staged training-loop evolution
 
 ## Project Structure
 
