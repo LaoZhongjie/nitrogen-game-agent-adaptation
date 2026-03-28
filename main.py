@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# 按你的数据与机器修改这里
+# Edit paths and hyperparameters below for your data and hardware.
 # ---------------------------------------------------------------------------
 
 
@@ -35,10 +35,10 @@ PATHS = PipelinePaths(
     finetune_config_template=Path("configs/finetune.example.json"),
 )
 
-# 评估与推理使用的 split（与 manifest 中一致）
+# Split used for inference and evaluation (must match manifest clip splits).
 EVAL_SPLIT: str = "val"
 
-# 构建 manifest 时的窗口与划分
+# Manifest construction: sliding window and train/val/test episode ratios.
 DATASET_SEED: int = 0
 CLIP_LENGTH: int = 16
 STRIDE: int = 16
@@ -46,7 +46,7 @@ TRAIN_RATIO: float = 0.8
 VAL_RATIO: float = 0.1
 TEST_RATIO: float = 0.1
 
-# 推理 batch（帧数）
+# Inference batch size in frames.
 PREDICT_BATCH_SIZE: int = 8
 
 
