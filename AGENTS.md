@@ -1,29 +1,44 @@
 # AGENTS.md
 
-## Cursor Cloud specific instructions
+Python 3.12 project: dataset manifest, Hugging Face image-classification fine-tuning, prediction export, and offline evaluation.
 
-This is a pure Python 3.12 project with no external service dependencies. The sole third-party runtime dependency is `pytest`.
+## Dependencies
 
-### Running tests
-
-```bash
-python3.12 -m pytest -q
-```
-
-All scripts and tests must be run from the repo root (`/workspace`).
-
-### Running the CLI
-
-The dataset builder is invoked as a Python module:
+Install from the repo root:
 
 ```bash
-python3.12 -m scripts.build_dataset --input <episodes_root> --output <manifest.json> [--seed N] [--clip-length N] [--stride N] [--train F] [--val F] [--test F]
+python3.12 -m pip install -r requirements.txt
 ```
 
-### Package structure gotcha
+## One-shot run
 
-The project uses `src/` as a top-level Python package (not `src`-layout with a `pyproject.toml`). Imports look like `from src.data.schema import ...` and `from scripts.build_dataset import ...`. The `__init__.py` files in `src/`, `src/data/`, `scripts/`, and `tests/` are required for these imports to work. If imports break after pulling, verify these files exist.
+```bash
+python3.12 main.py
+```
 
-### No linter configured
+Edit `PATHS` and related constants in `main.py` first. This runs build → train → predict → report.
 
-There is no linter (ruff, flake8, mypy, pyright) configured in the repo. The `.gitignore` anticipates `.mypy_cache/`, `.ruff_cache/`, etc., but no config files or dependencies exist yet.
+## CLIs (run from repo root)
+
+Build manifest:
+
+```bash
+python3.12 -m scripts.build_dataset --input <episodes_root> --output <manifest.json>
+```
+
+Fine-tune:
+
+```bash
+python3.12 -m scripts.finetune --config <config.json>
+```
+
+Predict (optional; `main.py` already does this):
+
+```bash
+python3.12 -m scripts.predict --model-dir <output_dir> --manifest <manifest.json> \
+  --split val --finetune-config <config.json> --output <predictions.json>
+```
+
+## Imports
+
+The package lives under `src/`. Use `from src....` and run modules as `python3.12 -m scripts.<name>`. Ensure `src/`, `src/data/`, `scripts/`, and `tests/` contain `__init__.py` where present.

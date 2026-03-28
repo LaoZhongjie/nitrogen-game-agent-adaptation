@@ -1,5 +1,5 @@
 ---
-description: Rules for NitroGen post-training project
+description: Rules for game-agent adaptation pipeline (manifest, HF train, eval)
 globs:
   - "**/*.py"
   - "**/*.md"
@@ -7,7 +7,7 @@ alwaysApply: true
 ---
 
 # Project
-This repository implements a small-scale NitroGen post-training project for adapting a pretrained gaming agent to a new game domain.
+This repository implements a manifest → Hugging Face fine-tuning → prediction → offline evaluation pipeline for game frame/action data.
 
 # Goals
 - Build a clean and reproducible pipeline
@@ -18,7 +18,7 @@ This repository implements a small-scale NitroGen post-training project for adap
 # Commands
 - Use Python 3.12
 - Prefer `python -m` execution when possible
-- Run tests after major file changes
+- Run `pytest` after major changes when tests exist
 - Keep scripts runnable from the repo root
 
 # Code style
@@ -30,7 +30,7 @@ This repository implements a small-scale NitroGen post-training project for adap
 
 # Workflow
 - Before writing code, check whether a schema or config file already defines the interface
-- When adding a new module, also add or update a minimal test
+- When adding a new module, add a minimal test if the repo keeps a `tests/` suite
 - Prefer small commits and small code generation tasks
 - When uncertain, propose file-by-file changes instead of rewriting the whole codebase
 
@@ -39,6 +39,5 @@ This repository implements a small-scale NitroGen post-training project for adap
 - Model wrappers go in `src/model`
 - Training logic goes in `src/train`
 - Evaluation logic goes in `src/eval`
-- Visualization helpers go in `src/viz`
 - CLI scripts go in `scripts`
 - Specs and planning docs go in `docs`

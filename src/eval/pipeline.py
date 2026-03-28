@@ -10,6 +10,7 @@ from typing import Sequence
 from src.data.loader import ManifestDataset, ManifestSample
 from src.data.schema import SplitName
 from src.eval.metrics import EvaluationRecord
+from src.model.alignment import ActionAligner, align_manifest_sample
 
 
 @dataclass(slots=True, frozen=True)
@@ -77,6 +78,7 @@ def build_evaluation_records_from_manifest_predictions(
     predictions: Sequence[PredictionRecord],
     split: SplitName | None = None,
     require_all_clips: bool = True,
+    target_aligner: ActionAligner | None = None,
 ) -> tuple[EvaluationRecord, ...]:
     """Join manifest targets with predicted actions into evaluation records."""
     if len(predictions) == 0:
@@ -104,17 +106,24 @@ def build_evaluation_records_from_manifest_predictions(
         prediction = prediction_by_clip.get(sample.clip_id)
         if prediction is None:
             continue
-        if len(prediction.predicted_action_ids) != len(sample.action_labels):
+        if target_aligner is not None:
+            aligned = align_manifest_sample(sample=sample, aligner=target_aligner)
+            target_action_ids = tuple(label.action_id for label in aligned.action_labels)
+            expected_len = len(aligned.action_labels)
+        else:
+            target_action_ids = sample.action_labels
+            expected_len = len(sample.action_labels)
+        if len(prediction.predicted_action_ids) != expected_len:
             raise ValueError(
                 f"predicted_action_ids length mismatch for clip {prediction.clip_id}: "
-                f"expected {len(sample.action_labels)}, got {len(prediction.predicted_action_ids)}"
+                f"expected {expected_len}, got {len(prediction.predicted_action_ids)}"
             )
         records.append(
             EvaluationRecord(
                 episode_id=sample.episode_id,
                 clip_id=sample.clip_id,
                 split=sample.split,
-                target_action_ids=sample.action_labels,
+                target_action_ids=target_action_ids,
                 predicted_action_ids=prediction.predicted_action_ids,
             )
         )

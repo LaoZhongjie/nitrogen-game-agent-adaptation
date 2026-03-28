@@ -1,0 +1,22 @@
+{
+  "manifest_path": "data/processed/manifest.json",
+  "output_dir": "outputs/run1",
+  "model_id": "google/vit-base-patch16-224",
+  "action_mapping": {
+    "walk left": "move_left",
+    "walk right": "move_right",
+    "jump": "jump"
+  },
+  "action_aliases": {},
+  "unknown_action_id": "unknown",
+  "confidence_floor": 0.0,
+  "num_train_epochs": 2.0,
+  "per_device_train_batch_size": 4,
+  "per_device_eval_batch_size": 4,
+  "learning_rate": 5e-5,
+  "logging_steps": 10,
+  "seed": 42,
+  "run_validation": true,
+  "max_train_clips": null,
+  "max_val_clips": null
+}

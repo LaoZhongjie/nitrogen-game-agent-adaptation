@@ -1,82 +1,32 @@
-# NitroGen Post-Training for New Game Skill Adaptation
+# Game agent adaptation (manifest → HF fine-tune → evaluate)
 
-This repository implements a staged, reproducible post-training pipeline for adapting a pretrained NitroGen gaming agent to a new game domain using small amounts of demonstration data.
+End-to-end pipeline: build a clip manifest from raw episodes, fine-tune a **Hugging Face image classifier** on frames with aligned action IDs, run inference to produce prediction JSON, and report offline metrics (action accuracy, temporal consistency).
 
-The project prioritizes:
+The project prioritizes stable data and artifact contracts, deterministic behavior where practical, small testable modules, and config-driven execution (no hardcoded paths). It does not include large-scale distributed training, a full world model, or environment rollouts.
 
-- stable data and artifact contracts
-- deterministic behavior where practical
-- small, testable modules
-- config-driven execution (no hardcoded paths)
+Use **Python 3.12** from the repository root.
 
-The project intentionally does not include large-scale distributed training infrastructure or a full world model.
-
-## Stage Status
-
-All planned stages in `docs/project_plan.md` are implemented in this repository:
-
-- Stage 1: dataset contracts and dataset builder
-- Stage 2: action alignment module
-- Stage 3: fine-tuning entry contract and artifact schemas
-- Stage 4: offline evaluation pipeline and report format
-- Stage 5: short-horizon rollout validation harness and metrics
-
-Note on Stage 3:
-
-- `scripts.finetune` currently provides a deterministic training contract with `train_stub`, `train_noop`, and `train_mock` backends.
-- It is a robust integration skeleton (data flow + artifact contracts), not a production-grade real optimizer loop yet.
-
-## Repository Layout
-
-- `docs/`
-  - `project_plan.md`: staged roadmap and goals
-  - `dataset_spec.md`: canonical dataset contract
-  - `finetune_spec.md`: fine-tuning entry contract
-- `scripts/`
-  - `build_dataset.py`: build validated clip manifest from raw episodes
-  - `finetune.py`: config-driven fine-tuning entry and artifact writer
-  - `evaluate.py`: offline evaluation and report generation
-  - `rollout_validate.py`: short-horizon rollout validation
-- `src/data/`
-  - schema types, split assignment, manifest loader
-- `src/model/`
-  - action alignment interfaces and vocabulary mapper
-- `src/train/`
-  - runner backends and Stage 3 artifact schema helpers
-- `src/eval/`
-  - offline metrics, report contracts, prediction-join pipeline, rollout harness
-- `tests/`
-  - unit and contract tests for all stages
-
-## Requirements
-
-- Python `3.12`
-- `pytest`
-
-Install and verify:
+## Install
 
 ```bash
-python3.12 -m pip install -U pip pytest
-python3.12 -m pytest -q
+python3.12 -m pip install -r requirements.txt
 ```
 
-Run all commands from repo root.
+Run all commands from the repo root.
 
-## End-to-End Workflow
+## 1. Prepare raw episodes
 
-### 1) Prepare raw episodes
+Expected layout under `--input`:
 
-Expected episode layout:
-
-- `<episodes_root>/<episode_id>/frames/`
-- `<episodes_root>/<episode_id>/actions.json` or `actions.csv`
+- `<episodes_root>/<episode_id>/frames/` — image files  
+- `<episodes_root>/<episode_id>/actions.json` or `actions.csv` — columns `frame`, `action`
 
 Rules:
 
 - `actions.json` and `actions.csv` are mutually exclusive per episode.
-- every frame file must have an action label.
+- Every frame file must have an action label.
 
-### 2) Build a dataset manifest
+## 2. Build the dataset manifest
 
 ```bash
 python3.12 -m scripts.build_dataset \
@@ -90,157 +40,68 @@ python3.12 -m scripts.build_dataset \
   --test 0.1
 ```
 
-Output:
+Output includes `schema_version`, `split_policy`, `episode_splits`, and clip records. Field definitions: `docs/dataset_spec.md`.
 
-- `manifest.json` with `schema_version`, `split_policy`, `episode_splits`, and clip records.
+## 3. Fine-tune (Hugging Face)
 
-### 3) Run fine-tuning entry (Stage 3 contract)
+JSON config must include `manifest_path`, `output_dir`, `model_id`, and action vocabulary fields (`action_mapping` and/or path-based fields supported by `src.train.config_io`). See `configs/finetune.example.json`.
 
-Create a config JSON, then run:
+Uses `transformers.AutoModelForImageClassification` + `AutoImageProcessor`. Set `model_id` to any HF image-classification checkpoint whose head can be resized (for example `google/vit-base-patch16-224`).
 
 ```bash
-python3.12 -m scripts.finetune --config configs/finetune.json
+python3.12 -m scripts.finetune --config configs/finetune.example.json
 ```
 
-Important config fields:
+Artifacts:
 
-- required: `manifest_path`, `output_dir`
-- common: `split`, `train_steps`, `runner_backend`, `dry_run`
-- alignment: `action_mapping`, `action_aliases`, `unknown_action_id`, `confidence_floor`
+- `output_dir/hf_model/` — weights + processor  
+- `output_dir/label2id.json` — class map  
+- `output_dir/finetune_config.json` — copy of config  
+- `output_dir/train_metrics.json` — run summary  
 
-Backends:
-
-- `train_stub`: deterministic decreasing placeholder loss
-- `train_noop`: deterministic zero-loss steps
-- `train_mock`: deterministic non-trivial loss curve
-
-Primary outputs:
-
-- `output_dir/metrics/latest_metrics.json`
-- `output_dir/checkpoints/latest.ckpt` (non-dry-run)
-- `output_dir/metrics/training_metadata.json` (non-dry-run)
-
-### 4) Run offline evaluation (Stage 4)
-
-You can evaluate in two modes.
-
-Mode A: prebuilt evaluation records:
+## 4. Predict on a split
 
 ```bash
-python3.12 -m scripts.evaluate \
-  --input data/eval/records.json \
-  --output data/eval/offline_report.json \
-  --split train
-```
-
-Mode B: manifest + predictions join:
-
-```bash
-python3.12 -m scripts.evaluate \
+python3.12 -m scripts.predict \
+  --model-dir outputs/run1 \
   --manifest data/processed/manifest.json \
-  --predictions data/eval/predictions.json \
-  --output data/eval/offline_report.json \
-  --split train
+  --split val \
+  --finetune-config outputs/run1/finetune_config.json \
+  --output outputs/run1/predictions_val.json
 ```
 
-Optional in mode B:
+## 5. Evaluation report
 
-- `--allow-missing-clips` to allow partial prediction coverage
+Offline evaluation is done via `src.eval` (join manifest + predictions, write report JSON). The one-shot driver writes `report_<split>.json` next to your run outputs.
 
-Evaluation report schema:
+## One-shot pipeline
 
-- `v1_offline_evaluation_report`
-
-### 5) Run rollout validation (Stage 5)
-
-Create `configs/rollout_validation.json`, then run:
+From the repo root, after editing paths in `main.py` and your finetune template:
 
 ```bash
-python3.12 -m scripts.rollout_validate --config configs/rollout_validation.json
+python3.12 main.py
 ```
 
-Example config keys:
+This runs manifest build → fine-tune → predict → report (see `main.py` for defaults).
 
-- required: `output_path`
-- rollout control: `rollout_count`, `max_horizon`
-- deterministic policy/env knobs:
-  - `action_cycle`
-  - `success_on_step`
-  - `terminal_on_step`
-  - `reward_on_success`
-  - `reward_on_failure`
+## Layout
 
-Rollout report schema:
+- `docs/project_plan.md` — pipeline overview  
+- `docs/dataset_spec.md` — manifest field definitions  
+- `scripts/` — `build_dataset`, `finetune`, `predict`  
+- `src/data/` — schema, splits, manifest loader  
+- `src/model/` — action alignment  
+- `src/train/` — HF fine-tuning and prediction helpers  
+- `src/eval/` — metrics, joining manifest + predictions, report JSON  
 
-- `v1_rollout_validation_report`
+## Common issues
 
-## Minimal Config Examples
+- **Manifest not found:** verify `manifest_path` and run `build_dataset` first.  
+- **Missing action for frame:** ensure every frame file has an action label entry.  
+- **Import errors after branch switches:** ensure `__init__.py` exists under `src/`, `src/data/`, and `scripts/` where used.  
 
-### `configs/finetune.json`
+## Design principles
 
-```json
-{
-  "manifest_path": "data/processed/manifest.json",
-  "output_dir": "outputs/finetune_run_001",
-  "split": "train",
-  "dry_run": false,
-  "runner_backend": "train_mock",
-  "train_steps": 5,
-  "mock_learning_rate": 0.1,
-  "action_mapping": {
-    "left": "move_left",
-    "jump": "jump"
-  },
-  "action_aliases": {
-    "move left": "left"
-  },
-  "unknown_action_id": "unknown",
-  "confidence_floor": 0.0,
-  "seed": 7
-}
-```
-
-### `configs/rollout_validation.json`
-
-```json
-{
-  "output_path": "outputs/rollout_validation/report.json",
-  "rollout_count": 4,
-  "max_horizon": 8,
-  "action_cycle": ["move_left", "jump"],
-  "success_on_step": 3,
-  "terminal_on_step": 5,
-  "reward_on_success": 1.0,
-  "reward_on_failure": 0.0
-}
-```
-
-## Testing
-
-Run all tests:
-
-```bash
-python3.12 -m pytest -q
-```
-
-Targeted examples:
-
-```bash
-python3.12 -m pytest -q tests/test_finetune.py
-python3.12 -m pytest -q tests/test_evaluate_cli.py tests/test_eval_pipeline.py tests/test_eval_metrics.py
-python3.12 -m pytest -q tests/test_rollout_validation.py
-```
-
-## Common Issues
-
-- `manifest not found`: verify `manifest_path` and run `build_dataset` first.
-- `missing action for frame ...`: ensure every frame file has an action label entry.
-- `missing predictions for manifest clips`: either provide complete predictions or use `--allow-missing-clips`.
-- import errors after branch switches: ensure `__init__.py` files in `src/`, `src/data/`, `scripts/`, and `tests/` exist.
-
-## Design Principles
-
-- keep modules simple and composable
-- keep interfaces stable and versioned
-- prefer explicit validation over implicit assumptions
-- keep scripts runnable from repo root
+- Keep modules simple and composable.  
+- Keep interfaces stable and versioned where practical.  
+- Prefer explicit validation over implicit assumptions.  

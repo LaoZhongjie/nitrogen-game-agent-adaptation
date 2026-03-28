@@ -198,7 +198,7 @@ def build_manifest(config: BuildDatasetConfig) -> dict[str, Any]:
 
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments."""
-    parser = argparse.ArgumentParser(description="Build NitroGen adaptation dataset manifest.")
+    parser = argparse.ArgumentParser(description="Build clip-level dataset manifest from raw episodes.")
     parser.add_argument("--input", required=True, help="Root directory containing episodes.")
     parser.add_argument("--output", required=True, help="Output manifest JSON path.")
     parser.add_argument("--seed", type=int, default=0, help="Deterministic split seed.")

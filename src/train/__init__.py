@@ -1,49 +1,29 @@
-"""Training utilities and contracts."""
+"""Hugging Face fine-tuning helpers for frame → action classification."""
 
-from src.train.runner import (
-    RunnerBackend,
-    TrainingRunContext,
-    TrainingRunner,
-    TrainingStepResult,
-    resolve_runner_backend,
-    resolve_training_runner,
-    run_train_backend_steps,
-    run_mock_runner_steps,
-    run_noop_runner_steps,
-    run_train_noop_steps,
-    run_train_stub_steps,
+from src.train.config_io import (
+    build_vocab_aligner_from_finetune_config,
+    load_json_object,
+    normalized_string_mapping,
 )
-from src.train.checkpoint import build_checkpoint_metadata, validate_checkpoint_metadata
-from src.train.metadata import (
-    TRAINING_METADATA_SCHEMA,
-    build_training_metadata,
-    validate_training_metadata,
+from src.train.hf_finetune import (
+    HFFinetuneParams,
+    build_label2id,
+    collect_aligned_frame_rows,
+    manifest_input_root,
+    predict_clip_actions,
+    resolve_frame_path,
+    run_image_classification_finetune,
 )
-from src.train.summary import SUMMARY_SCHEMA, build_summary_payload, validate_summary_payload
-from src.train.state import TRAINING_STATE_SCHEMA, TrainingState, validate_training_state
 
 __all__ = [
-    "RunnerBackend",
-    "TrainingRunContext",
-    "TrainingRunner",
-    "TrainingStepResult",
-    "resolve_runner_backend",
-    "resolve_training_runner",
-    "run_train_backend_steps",
-    "run_mock_runner_steps",
-    "run_noop_runner_steps",
-    "run_train_noop_steps",
-    "run_train_stub_steps",
-    "build_checkpoint_metadata",
-    "validate_checkpoint_metadata",
-    "TRAINING_METADATA_SCHEMA",
-    "build_training_metadata",
-    "validate_training_metadata",
-    "SUMMARY_SCHEMA",
-    "build_summary_payload",
-    "validate_summary_payload",
-    "TRAINING_STATE_SCHEMA",
-    "TrainingState",
-    "validate_training_state",
+    "HFFinetuneParams",
+    "build_label2id",
+    "build_vocab_aligner_from_finetune_config",
+    "collect_aligned_frame_rows",
+    "load_json_object",
+    "manifest_input_root",
+    "normalized_string_mapping",
+    "predict_clip_actions",
+    "resolve_frame_path",
+    "run_image_classification_finetune",
 ]
-

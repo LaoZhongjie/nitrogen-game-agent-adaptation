@@ -1,4 +1,4 @@
-"""Dataset schema contracts for NitroGen post-training adaptation."""
+"""Dataset schema contracts for clip manifests and splits."""
 
 from __future__ import annotations
 

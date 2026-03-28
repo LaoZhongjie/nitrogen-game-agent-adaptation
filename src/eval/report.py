@@ -13,7 +13,7 @@ from src.eval.metrics import EvaluationRecord, EvaluationSummary, SplitEvaluatio
 
 @dataclass(slots=True, frozen=True)
 class EvaluationReport:
-    """Serializable Stage 4 offline evaluation report artifact."""
+    """Serializable offline evaluation report artifact."""
 
     schema_version: str
     evaluated_split: str | None

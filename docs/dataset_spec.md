@@ -1,6 +1,6 @@
 # Dataset Specification
 
-This document defines the canonical dataset contract for NitroGen post-training adaptation.
+This document defines the canonical clip-manifest contract used by the fine-tuning and evaluation scripts.
 
 ## Overview
 
