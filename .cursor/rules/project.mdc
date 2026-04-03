@@ -1,5 +1,5 @@
 ---
-description: Rules for game-agent adaptation pipeline (manifest, HF train, eval)
+description: Rules for NitroGen + HunyuanVideo world model pipeline
 globs:
   - "**/*.py"
   - "**/*.md"
@@ -7,7 +7,7 @@ alwaysApply: true
 ---
 
 # Project
-This repository implements a manifest → Hugging Face fine-tuning → prediction → offline evaluation pipeline for game frame/action data.
+This repository implements a NitroGen download → HunyuanVideo LoRA fine-tuning → video generation → offline evaluation pipeline for action-conditioned game world modeling.
 
 # Goals
 - Build a clean and reproducible pipeline
