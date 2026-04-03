@@ -27,17 +27,14 @@ from src.train.config_io import VideoGenConfig
 
 logger = logging.getLogger(__name__)
 
+_decord_missing_logged = False
 
-def _load_video_frames(
+
+def _load_video_frames_decord(
     video_path: str,
     num_frames: int,
     resolution: tuple[int, int],
 ) -> np.ndarray:
-    """Load and preprocess video frames using decord.
-
-    Returns an array of shape ``(T, H, W, 3)`` with uint8 pixel values.
-    ``resolution`` is ``(height, width)``.
-    """
     import cv2
     from decord import VideoReader, cpu
 
@@ -53,12 +50,70 @@ def _load_video_frames(
 
     h_target, w_target = resolution
     if frames.shape[1] != h_target or frames.shape[2] != w_target:
-        resized = np.stack(
+        frames = np.stack(
             [cv2.resize(f, (w_target, h_target), interpolation=cv2.INTER_LINEAR) for f in frames]
         )
-        frames = resized
-
     return frames
+
+
+def _load_video_frames_opencv(
+    video_path: str,
+    num_frames: int,
+    resolution: tuple[int, int],
+) -> np.ndarray:
+    """Decode video with OpenCV (BGR→RGB). Loads all frames then subsamples — fine for short NitroGen chunks."""
+    import cv2
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video: {video_path}")
+    rgb_frames: list[np.ndarray] = []
+    while True:
+        ret, bgr = cap.read()
+        if not ret:
+            break
+        rgb_frames.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+    cap.release()
+    if not rgb_frames:
+        raise RuntimeError(f"No frames decoded from {video_path}")
+
+    total = len(rgb_frames)
+    if total <= num_frames:
+        chosen = rgb_frames
+    else:
+        idxs = np.linspace(0, total - 1, num_frames, dtype=int).tolist()
+        chosen = [rgb_frames[i] for i in idxs]
+    frames = np.stack(chosen, axis=0)
+
+    h_target, w_target = resolution
+    if frames.shape[1] != h_target or frames.shape[2] != w_target:
+        frames = np.stack(
+            [cv2.resize(f, (w_target, h_target), interpolation=cv2.INTER_LINEAR) for f in frames]
+        )
+    return frames
+
+
+def _load_video_frames(
+    video_path: str,
+    num_frames: int,
+    resolution: tuple[int, int],
+) -> np.ndarray:
+    """Load and preprocess video frames (decord if available, else OpenCV).
+
+    Returns an array of shape ``(T, H, W, 3)`` with uint8 pixel values.
+    ``resolution`` is ``(height, width)``.
+    """
+    global _decord_missing_logged
+    try:
+        return _load_video_frames_decord(video_path, num_frames, resolution)
+    except ImportError:
+        if not _decord_missing_logged:
+            logger.warning(
+                "decord not installed — using OpenCV for video frames. "
+                "Install decord for faster IO: pip install decord"
+            )
+            _decord_missing_logged = True
+        return _load_video_frames_opencv(video_path, num_frames, resolution)
 
 
 class VideoActionDataset(Dataset[dict[str, Any]]):
