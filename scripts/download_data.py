@@ -4,6 +4,13 @@ Downloads action annotation shards (parquet + metadata) from
 ``nvidia/NitroGen`` on HuggingFace, and optionally downloads source
 videos using URLs found in each chunk's ``metadata.json``.
 
+YouTube / youtu.be URLs require ``yt-dlp`` (see ``requirements.txt``). Merging
+separate video+audio streams into one MP4 needs ``ffmpeg`` on ``PATH``.
+
+NitroGen ``metadata.json`` provides ``original_video.start_time`` / ``end_time``;
+the downloader uses them so yt-dlp fetches only that segment (much faster than
+the full upload). Set ``NITROGEN_YTDLP_VERBOSE=1`` to print yt-dlp progress.
+
 Usage (from repo root)::
 
     python3.12 -m scripts.download_data \\
@@ -17,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tarfile
 import tempfile
@@ -27,7 +35,183 @@ if __package__ in {None, ""}:
     repo_root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo_root))
 
+from urllib.parse import urlparse
+
 from src.data.mp4_validate import is_probably_valid_mp4
+
+
+def _url_host(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _needs_ytdlp(url: str) -> bool:
+    """True for hosts where a plain HTTP GET does not return raw media (e.g. YouTube)."""
+    host = _url_host(url)
+    if not host:
+        return False
+    return host == "youtu.be" or host.endswith(".youtube.com") or host == "youtube.com"
+
+
+def _cleanup_stem_outputs(stem: Path) -> None:
+    """Remove files left by yt-dlp for template ``stem.%(ext)s``."""
+    parent = stem.parent
+    prefix = stem.name
+    if not parent.is_dir():
+        return
+    for p in parent.iterdir():
+        if p.is_file() and p.name.startswith(prefix + ".") and p.suffix.lower() != ".part":
+            p.unlink(missing_ok=True)
+
+
+def _ytdlp_verbose() -> bool:
+    """If true, show yt-dlp progress (env ``NITROGEN_YTDLP_VERBOSE=1``)."""
+    return os.environ.get("NITROGEN_YTDLP_VERBOSE", "").strip() in ("1", "true", "yes")
+
+
+def _safe_metadata_float(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _segment_range_seconds(start: Optional[float], end: Optional[float]) -> Optional[tuple[float, float]]:
+    """Return ``(start, end)`` for yt-dlp ``download_ranges`` if metadata looks sane."""
+    if start is None or end is None:
+        return None
+    try:
+        s = float(start)
+        e = float(end)
+    except (TypeError, ValueError):
+        return None
+    if e <= s or (e - s) < 0.05:
+        return None
+    return (s, e)
+
+
+def _download_video_ytdlp(
+    url: str,
+    output_path: Path,
+    segment: Optional[tuple[float, float]] = None,
+) -> bool:
+    """Download via yt-dlp (required for YouTube watch URLs). Writes validated ``output_path``.
+
+    If ``segment`` is ``(start_sec, end_sec)``, only that interval is fetched (NitroGen chunk
+    window), which is much faster than downloading the full source video.
+    """
+    try:
+        import yt_dlp  # type: ignore[import-untyped]
+    except ImportError:
+        print(
+            "  [WARN] YouTube (or similar) URL requires yt-dlp. Install: pip install yt-dlp",
+        )
+        return False
+
+    try:
+        from yt_dlp.utils import download_range_func  # type: ignore[import-untyped]
+    except ImportError:
+        download_range_func = None  # type: ignore[assignment,misc]
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.unlink(missing_ok=True)
+    stem = output_path.with_suffix("")
+    outtmpl = str(stem) + ".%(ext)s"
+
+    verbose = _ytdlp_verbose()
+    base_opts: dict[str, object] = {
+        "outtmpl": outtmpl,
+        "quiet": not verbose,
+        "no_warnings": not verbose,
+        "noprogress": not verbose,
+        "overwrites": True,
+        "retries": 3,
+        "fragment_retries": 3,
+        "socket_timeout": 120,
+    }
+
+    format_with_merge = (
+        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/"
+        "best[ext=mp4]/best"
+    )
+    format_no_merge = "best[ext=mp4]/best"
+
+    def _run(fmt: str, merge_mp4: bool, use_segment: bool) -> None:
+        opts: dict[str, object] = {**base_opts, "format": fmt}
+        if merge_mp4:
+            opts["merge_output_format"] = "mp4"
+        if use_segment and segment is not None and download_range_func is not None:
+            opts["download_ranges"] = download_range_func(
+                None,
+                [(float(segment[0]), float(segment[1]))],
+            )
+            opts["force_keyframes_at_cuts"] = True
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+
+    def _finalize_downloaded_file() -> bool:
+        candidates = sorted(
+            stem.parent.glob(stem.name + ".*"),
+            key=lambda p: p.stat().st_mtime if p.is_file() else 0,
+            reverse=True,
+        )
+        for cand in candidates:
+            if not cand.is_file() or cand.name.endswith(".part"):
+                continue
+            if is_probably_valid_mp4(cand):
+                if cand.resolve() != output_path.resolve():
+                    cand.replace(output_path)
+                return True
+        for cand in candidates:
+            if cand.is_file() and not cand.name.endswith(".part"):
+                cand.unlink(missing_ok=True)
+        return False
+
+    # Prefer time-range download when metadata provides a valid window (typical NitroGen chunk).
+    segment_attempts: tuple[bool, ...]
+    if segment is not None and download_range_func is not None:
+        segment_attempts = (True, False)
+    else:
+        if segment is not None and download_range_func is None:
+            print(
+                "  [WARN] yt-dlp is too old (no download_range_func); "
+                "downloading full source video — upgrade: pip install -U yt-dlp",
+                flush=True,
+            )
+        segment_attempts = (False,)
+
+    last_exc: Optional[Exception] = None
+    for use_segment in segment_attempts:
+        for merge_mp4, fmt in ((True, format_with_merge), (False, format_no_merge)):
+            _cleanup_stem_outputs(stem)
+            try:
+                _run(fmt, merge_mp4=merge_mp4, use_segment=use_segment)
+            except Exception as exc:
+                last_exc = exc
+                continue
+            if _finalize_downloaded_file():
+                return True
+
+        if use_segment and segment is not None:
+            print(
+                f"  [WARN] yt-dlp segment download failed; retrying full video "
+                f"({segment[0]:.1f}–{segment[1]:.1f}s requested): {url[:70]}...",
+                flush=True,
+            )
+
+    if last_exc is not None:
+        print(f"  [WARN] yt-dlp failed for {url[:80]}...: {last_exc}")
+    else:
+        print(
+            f"  [WARN] yt-dlp finished but output was not a valid MP4 "
+            f"(install ffmpeg for merge if missing): {url[:80]}...",
+        )
+    _cleanup_stem_outputs(stem)
+    return False
 
 
 def _download_shard_archive(
@@ -61,12 +245,25 @@ def _extract_shard(archive_path: Path, output_dir: Path) -> Path:
     return shard_dirs[-1]
 
 
-def _download_video(url: str, output_path: Path, timeout: int = 120) -> bool:
+def _download_video(
+    url: str,
+    output_path: Path,
+    timeout: int = 120,
+    segment_start: Optional[float] = None,
+    segment_end: Optional[float] = None,
+) -> bool:
     """Download a video from ``url`` to ``output_path``. Returns success flag.
 
-    Uses a browser-like User-Agent so CDNs are less likely to return HTML.
+    YouTube / youtu.be links use ``yt-dlp`` (merged MP4 when ffmpeg is available).
+    Optional ``segment_start`` / ``segment_end`` (seconds in source video) limit the
+    download to that window when using yt-dlp (NitroGen ``original_video`` times).
+    Other URLs use HTTP GET with a browser-like User-Agent.
     After download, validates MP4 structure; corrupt or non-MP4 files are removed.
     """
+    if _needs_ytdlp(url):
+        seg = _segment_range_seconds(segment_start, segment_end)
+        return _download_video_ytdlp(url, output_path, segment=seg)
+
     import urllib.error
     import urllib.request
 
@@ -139,14 +336,34 @@ def _process_shard(
                 json.dump(metadata, fp, indent=2)
 
             if download_videos:
-                video_url = metadata.get("original_video", {}).get("url", "")
+                orig = metadata.get("original_video", {}) or {}
+                video_url = str(orig.get("url", "") or "")
                 if video_url:
                     video_out = dest / "video.mp4"
                     need_fetch = not video_out.exists() or not is_probably_valid_mp4(video_out)
                     if need_fetch:
                         if video_out.exists():
                             video_out.unlink(missing_ok=True)
-                        ok = _download_video(video_url, video_out)
+                        t0 = _safe_metadata_float(orig.get("start_time"))
+                        t1 = _safe_metadata_float(orig.get("end_time"))
+                        span = _segment_range_seconds(t0, t1)
+                        if span:
+                            print(
+                                f"  [video] {video_id}/{chunk_id}  "
+                                f"segment {span[0]:.2f}s–{span[1]:.2f}s",
+                                flush=True,
+                            )
+                        else:
+                            print(
+                                f"  [video] {video_id}/{chunk_id}  full source (no valid time window)",
+                                flush=True,
+                            )
+                        ok = _download_video(
+                            video_url,
+                            video_out,
+                            segment_start=t0,
+                            segment_end=t1,
+                        )
                         if ok:
                             stats["videos_downloaded"] += 1
                         else:
