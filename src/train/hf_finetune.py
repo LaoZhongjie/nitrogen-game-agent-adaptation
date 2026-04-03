@@ -21,6 +21,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from src.data.loader import NitroGenDataset, chunk_to_training_sample
+from src.data.mp4_validate import is_probably_valid_mp4
 from src.data.schema import SplitName, SplitPolicy, TrainingSample
 from src.model.action_encoder import GamepadActionEncoder
 from src.train.config_io import VideoGenConfig
@@ -193,7 +194,21 @@ def _collect_training_samples(
     )
 
     samples: list[TrainingSample] = []
+    skipped_invalid = 0
     for chunk in dataset:
+        vp = Path(chunk.video_path) if chunk.video_path else None
+        if vp is None or not vp.is_file():
+            skipped_invalid += 1
+            continue
+        if not is_probably_valid_mp4(vp):
+            logger.warning(
+                "Skipping chunk (invalid or incomplete MP4 — re-run download with "
+                "--download-videos): chunk=%s path=%s",
+                chunk.chunk_id,
+                vp,
+            )
+            skipped_invalid += 1
+            continue
         sample = chunk_to_training_sample(
             chunk=chunk,
             target_resolution=config.resolution,
@@ -202,6 +217,9 @@ def _collect_training_samples(
         )
         if sample is not None:
             samples.append(sample)
+
+    if skipped_invalid:
+        logger.info("Skipped %d chunks with missing or invalid video.mp4", skipped_invalid)
 
     return samples
 
@@ -308,7 +326,12 @@ def run_hunyuanvideo_lora_finetune(config: VideoGenConfig) -> dict[str, Any]:
     logger.info("Collecting training samples from %s ...", config.dataset_path)
     train_samples = _collect_training_samples(config, SplitName.TRAIN, action_encoder)
     if not train_samples:
-        raise ValueError("No training samples found. Check dataset_path and game_filter.")
+        raise ValueError(
+            "No training samples found. Check dataset_path, game_filter, and that "
+            "video.mp4 files exist and are valid (incomplete downloads cause "
+            "'moov atom not found'). Re-run: python -m scripts.download_data "
+            "--output <dir> --shards ... --download-videos"
+        )
     logger.info("Training samples: %d", len(train_samples))
 
     val_samples = _collect_training_samples(config, SplitName.VAL, action_encoder)
