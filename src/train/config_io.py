@@ -57,6 +57,8 @@ class VideoGenConfig:
 
     split_seed: int = 42
     split_policy: SplitPolicy = SplitPolicy(train=0.8, val=0.1, test=0.1)
+    # "video" = one split per source video; "chunk" = per chunk (better for tiny subsets).
+    split_granularity: str = "video"
 
     game_filter: Optional[str] = None
     max_train_chunks: Optional[int] = None
@@ -92,6 +94,10 @@ def load_videogen_config(path: Path) -> VideoGenConfig:
     res_raw = raw.get("resolution", [480, 720])
     resolution = (int(res_raw[0]), int(res_raw[1]))
 
+    sg = str(raw.get("split_granularity", "video"))
+    if sg not in ("video", "chunk"):
+        raise ValueError("split_granularity must be 'video' or 'chunk'.")
+
     return VideoGenConfig(
         dataset_path=str(raw["dataset_path"]),
         output_dir=str(raw["output_dir"]),
@@ -112,6 +118,7 @@ def load_videogen_config(path: Path) -> VideoGenConfig:
         joystick_deadzone=float(raw.get("joystick_deadzone", 0.2)),
         split_seed=int(raw.get("split_seed", 42)),
         split_policy=split_policy,
+        split_granularity=sg,
         game_filter=raw.get("game_filter"),
         max_train_chunks=int(raw["max_train_chunks"]) if raw.get("max_train_chunks") is not None else None,
         max_val_chunks=int(raw["max_val_chunks"]) if raw.get("max_val_chunks") is not None else None,
