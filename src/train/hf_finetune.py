@@ -225,6 +225,57 @@ def _collect_training_samples(
     return samples
 
 
+def _build_pipeline_load_kwargs(config: VideoGenConfig) -> dict[str, Any]:
+    """Kwargs for ``HunyuanVideoPipeline.from_pretrained`` (dtype + optional NF4)."""
+    load_kwargs: dict[str, Any] = {"torch_dtype": torch.bfloat16}
+
+    if config.quantization != "nf4":
+        return load_kwargs
+
+    if not torch.cuda.is_available():
+        logger.warning(
+            "quantization is 'nf4' but no CUDA GPU is visible — bitsandbytes 4-bit needs a GPU. "
+            "Loading without NF4 (full fp/bf16 weights; HunyuanVideo still needs very large VRAM or "
+            "CPU RAM and may OOM). Use a GPU-enabled container (e.g. --gpus all) for real training."
+        )
+        return load_kwargs
+
+    try:
+        from diffusers.quantizers import PipelineQuantizationConfig
+
+        load_kwargs["quantization_config"] = PipelineQuantizationConfig(
+            quant_backend="bitsandbytes_4bit",
+            quant_kwargs={
+                "load_in_4bit": True,
+                "bnb_4bit_quant_type": "nf4",
+                "bnb_4bit_compute_dtype": torch.bfloat16,
+            },
+            components_to_quantize="transformer",
+        )
+        return load_kwargs
+    except ImportError:
+        pass
+
+    # Older diffusers: transformers BitsAndBytesConfig (may error on very new diffusers).
+    try:
+        from transformers import BitsAndBytesConfig
+
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        )
+        logger.warning(
+            "Using transformers.BitsAndBytesConfig for nf4; prefer diffusers with "
+            "PipelineQuantizationConfig for HunyuanVideo."
+        )
+    except ImportError:
+        logger.warning("bitsandbytes/transformers not available; loading without nf4 quantization.")
+        load_kwargs.pop("quantization_config", None)
+
+    return load_kwargs
+
+
 def _setup_model_and_tokenizer(config: VideoGenConfig) -> tuple[Any, Any, Any]:
     """Load HunyuanVideo pipeline components with optional quantization.
 
@@ -241,20 +292,7 @@ def _setup_model_and_tokenizer(config: VideoGenConfig) -> tuple[Any, Any, Any]:
         )
         return None, None, None
 
-    load_kwargs: dict[str, Any] = {"torch_dtype": torch.bfloat16}
-
-    if config.quantization == "nf4":
-        try:
-            from transformers import BitsAndBytesConfig
-
-            quant_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-            )
-            load_kwargs["quantization_config"] = quant_config
-        except ImportError:
-            logger.warning("bitsandbytes not available; skipping nf4 quantization.")
+    load_kwargs = _build_pipeline_load_kwargs(config)
 
     try:
         pipe = HunyuanVideoPipeline.from_pretrained(config.model_id, **load_kwargs)
