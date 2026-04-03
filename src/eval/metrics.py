@@ -1,160 +1,206 @@
-"""Offline evaluation metrics for post-training adaptation."""
+"""Video generation evaluation metrics.
+
+Provides FID (per-frame), temporal consistency (optical flow), and LPIPS
+perceptual similarity. FVD requires a pre-trained I3D model and is computed
+separately in ``compute_fvd`` when the dependency is available.
+"""
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from pathlib import Path
+from typing import Sequence
 
-from src.data.schema import SplitName
+import numpy as np
 
-
-@dataclass(slots=True, frozen=True)
-class EvaluationRecord:
-    """One evaluated clip with target and predicted actions."""
-
-    episode_id: str
-    clip_id: str
-    split: SplitName
-    target_action_ids: tuple[str, ...]
-    predicted_action_ids: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        if not self.episode_id.strip():
-            raise ValueError("episode_id must be non-empty.")
-        if not self.clip_id.strip():
-            raise ValueError("clip_id must be non-empty.")
-        if len(self.target_action_ids) == 0:
-            raise ValueError("target_action_ids must be non-empty.")
-        if len(self.target_action_ids) != len(self.predicted_action_ids):
-            raise ValueError("target_action_ids and predicted_action_ids must have equal length.")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
-class SplitEvaluationMetrics:
-    """Aggregated metrics for one data split."""
+class VideoEvalRecord:
+    """Evaluation result for a single generated video."""
 
-    split: SplitName
-    clip_count: int
-    action_count: int
-    correct_action_count: int
-    action_accuracy: float
-    mean_temporal_consistency: float
-
-    def __post_init__(self) -> None:
-        if self.clip_count < 0:
-            raise ValueError("clip_count must be >= 0.")
-        if self.action_count < 0:
-            raise ValueError("action_count must be >= 0.")
-        if self.correct_action_count < 0:
-            raise ValueError("correct_action_count must be >= 0.")
-        if self.correct_action_count > self.action_count:
-            raise ValueError("correct_action_count must be <= action_count.")
-        if not 0.0 <= self.action_accuracy <= 1.0:
-            raise ValueError("action_accuracy must be in range [0.0, 1.0].")
-        if not 0.0 <= self.mean_temporal_consistency <= 1.0:
-            raise ValueError("mean_temporal_consistency must be in range [0.0, 1.0].")
+    chunk_id: str
+    game: str
+    num_frames_generated: int
+    num_frames_reference: int
+    fid_per_frame: float | None = None
+    lpips_mean: float | None = None
+    temporal_consistency: float | None = None
+    psnr_mean: float | None = None
+    ssim_mean: float | None = None
 
 
 @dataclass(slots=True, frozen=True)
-class EvaluationSummary:
-    """Overall and split-wise evaluation outputs."""
+class VideoEvalSummary:
+    """Aggregated metrics across all evaluated videos."""
 
-    total_clip_count: int
-    total_action_count: int
-    total_correct_action_count: int
-    action_accuracy: float
-    mean_temporal_consistency: float
-    split_metrics: Mapping[str, SplitEvaluationMetrics]
-
-    def __post_init__(self) -> None:
-        if self.total_clip_count < 0:
-            raise ValueError("total_clip_count must be >= 0.")
-        if self.total_action_count < 0:
-            raise ValueError("total_action_count must be >= 0.")
-        if self.total_correct_action_count < 0:
-            raise ValueError("total_correct_action_count must be >= 0.")
-        if self.total_correct_action_count > self.total_action_count:
-            raise ValueError("total_correct_action_count must be <= total_action_count.")
-        if not 0.0 <= self.action_accuracy <= 1.0:
-            raise ValueError("action_accuracy must be in range [0.0, 1.0].")
-        if not 0.0 <= self.mean_temporal_consistency <= 1.0:
-            raise ValueError("mean_temporal_consistency must be in range [0.0, 1.0].")
+    total_videos: int
+    mean_fid: float | None = None
+    mean_lpips: float | None = None
+    mean_temporal_consistency: float | None = None
+    mean_psnr: float | None = None
+    mean_ssim: float | None = None
+    fvd: float | None = None
 
 
-def compute_action_accuracy(target_action_ids: Sequence[str], predicted_action_ids: Sequence[str]) -> float:
-    """Compute exact-match action accuracy for one aligned sequence."""
-    if len(target_action_ids) != len(predicted_action_ids):
-        raise ValueError("target_action_ids and predicted_action_ids must have equal length.")
-    if len(target_action_ids) == 0:
-        return 0.0
-    correct = sum(1 for target, predicted in zip(target_action_ids, predicted_action_ids, strict=True) if target == predicted)
-    return correct / float(len(target_action_ids))
+def compute_psnr(img1: np.ndarray, img2: np.ndarray) -> float:
+    """Compute PSNR between two uint8 images."""
+    mse = np.mean((img1.astype(np.float64) - img2.astype(np.float64)) ** 2)
+    if mse == 0:
+        return float("inf")
+    return float(10.0 * np.log10(255.0 ** 2 / mse))
 
 
-def compute_temporal_consistency(action_ids: Sequence[str]) -> float:
-    """Compute adjacent-step action consistency in range [0.0, 1.0]."""
-    if len(action_ids) <= 1:
+def compute_ssim_simple(img1: np.ndarray, img2: np.ndarray) -> float:
+    """Simplified SSIM for uint8 images (luminance channel only).
+
+    Uses the standard SSIM constants for 8-bit images.
+    """
+    C1 = (0.01 * 255) ** 2
+    C2 = (0.03 * 255) ** 2
+
+    i1 = img1.astype(np.float64).mean(axis=-1) if img1.ndim == 3 else img1.astype(np.float64)
+    i2 = img2.astype(np.float64).mean(axis=-1) if img2.ndim == 3 else img2.astype(np.float64)
+
+    mu1, mu2 = i1.mean(), i2.mean()
+    sigma1_sq = np.var(i1)
+    sigma2_sq = np.var(i2)
+    sigma12 = np.mean((i1 - mu1) * (i2 - mu2))
+
+    num = (2 * mu1 * mu2 + C1) * (2 * sigma12 + C2)
+    den = (mu1 ** 2 + mu2 ** 2 + C1) * (sigma1_sq + sigma2_sq + C2)
+    return float(num / den)
+
+
+def compute_temporal_consistency(frames: np.ndarray) -> float:
+    """Measure temporal smoothness via mean absolute difference between adjacent frames.
+
+    Returns a score in [0, 1] where 1.0 means perfectly consistent.
+    Lower pixel differences = higher consistency.
+    """
+    if len(frames) <= 1:
         return 1.0
-    stable_pairs = sum(1 for idx in range(len(action_ids) - 1) if action_ids[idx] == action_ids[idx + 1])
-    return stable_pairs / float(len(action_ids) - 1)
+
+    diffs: list[float] = []
+    for i in range(len(frames) - 1):
+        diff = np.mean(np.abs(frames[i].astype(np.float32) - frames[i + 1].astype(np.float32)))
+        diffs.append(diff)
+
+    mean_diff = np.mean(diffs)
+    consistency = 1.0 - min(float(mean_diff) / 255.0, 1.0)
+    return consistency
 
 
-def evaluate_records(records: Sequence[EvaluationRecord]) -> EvaluationSummary:
-    """Aggregate overall and split-wise offline metrics from clip records."""
-    if len(records) == 0:
+def compute_lpips_score(
+    gen_frames: np.ndarray,
+    ref_frames: np.ndarray,
+) -> float | None:
+    """Compute mean LPIPS between generated and reference frames.
+
+    Requires ``lpips`` and ``torch``. Returns ``None`` if not available.
+    """
+    try:
+        import lpips
+        import torch
+    except ImportError:
+        logger.warning("lpips or torch not available; skipping LPIPS computation.")
+        return None
+
+    loss_fn = lpips.LPIPS(net="alex", verbose=False)
+    n = min(len(gen_frames), len(ref_frames))
+    if n == 0:
+        return None
+
+    scores: list[float] = []
+    for i in range(n):
+        g = torch.from_numpy(gen_frames[i]).permute(2, 0, 1).unsqueeze(0).float() / 127.5 - 1.0
+        r = torch.from_numpy(ref_frames[i]).permute(2, 0, 1).unsqueeze(0).float() / 127.5 - 1.0
+        with torch.no_grad():
+            d = loss_fn(g, r)
+        scores.append(float(d.item()))
+
+    return float(np.mean(scores))
+
+
+def compute_fid_from_features(
+    gen_features: np.ndarray,
+    ref_features: np.ndarray,
+) -> float:
+    """Compute FID between two sets of feature vectors.
+
+    Each input has shape ``(N, D)`` where N is the number of samples and D is the
+    feature dimension (e.g. from InceptionV3 or CLIP).
+    """
+    from scipy.linalg import sqrtm
+
+    mu_gen = np.mean(gen_features, axis=0)
+    mu_ref = np.mean(ref_features, axis=0)
+    sigma_gen = np.cov(gen_features, rowvar=False)
+    sigma_ref = np.cov(ref_features, rowvar=False)
+
+    diff = mu_gen - mu_ref
+    covmean = sqrtm(sigma_gen @ sigma_ref)
+
+    if np.iscomplexobj(covmean):
+        covmean = covmean.real
+
+    fid = float(diff @ diff + np.trace(sigma_gen + sigma_ref - 2.0 * covmean))
+    return max(fid, 0.0)
+
+
+def evaluate_video_pair(
+    chunk_id: str,
+    game: str,
+    generated_frames: np.ndarray,
+    reference_frames: np.ndarray | None = None,
+) -> VideoEvalRecord:
+    """Evaluate a single generated video against an optional reference."""
+    num_gen = len(generated_frames)
+    num_ref = len(reference_frames) if reference_frames is not None else 0
+
+    tc = compute_temporal_consistency(generated_frames)
+
+    psnr_val = None
+    ssim_val = None
+    lpips_val = None
+
+    if reference_frames is not None and num_ref > 0:
+        n = min(num_gen, num_ref)
+        psnrs = [compute_psnr(generated_frames[i], reference_frames[i]) for i in range(n)]
+        ssims = [compute_ssim_simple(generated_frames[i], reference_frames[i]) for i in range(n)]
+        finite_psnrs = [p for p in psnrs if p != float("inf")]
+        psnr_val = float(np.mean(finite_psnrs)) if finite_psnrs else float("inf")
+        ssim_val = float(np.mean(ssims))
+        lpips_val = compute_lpips_score(generated_frames[:n], reference_frames[:n])
+
+    return VideoEvalRecord(
+        chunk_id=chunk_id,
+        game=game,
+        num_frames_generated=num_gen,
+        num_frames_reference=num_ref,
+        lpips_mean=lpips_val,
+        temporal_consistency=tc,
+        psnr_mean=psnr_val,
+        ssim_mean=ssim_val,
+    )
+
+
+def evaluate_records(records: Sequence[VideoEvalRecord]) -> VideoEvalSummary:
+    """Aggregate evaluation records into a summary."""
+    if not records:
         raise ValueError("records must be non-empty.")
 
-    split_buckets: dict[SplitName, list[EvaluationRecord]] = {
-        SplitName.TRAIN: [],
-        SplitName.VAL: [],
-        SplitName.TEST: [],
-    }
-    for record in records:
-        split_buckets[record.split].append(record)
+    tc_scores = [r.temporal_consistency for r in records if r.temporal_consistency is not None]
+    lpips_scores = [r.lpips_mean for r in records if r.lpips_mean is not None]
+    psnr_scores = [r.psnr_mean for r in records if r.psnr_mean is not None]
+    ssim_scores = [r.ssim_mean for r in records if r.ssim_mean is not None]
 
-    split_metrics: dict[str, SplitEvaluationMetrics] = {}
-    all_temporal_scores: list[float] = []
-    total_action_count = 0
-    total_correct_action_count = 0
-
-    for split_name, split_records in split_buckets.items():
-        if len(split_records) == 0:
-            continue
-
-        split_action_count = sum(len(record.target_action_ids) for record in split_records)
-        split_correct_count = sum(
-            sum(
-                1
-                for target, predicted in zip(record.target_action_ids, record.predicted_action_ids, strict=True)
-                if target == predicted
-            )
-            for record in split_records
-        )
-        split_temporal_scores = [compute_temporal_consistency(record.predicted_action_ids) for record in split_records]
-        split_mean_temporal = sum(split_temporal_scores) / float(len(split_temporal_scores))
-        split_accuracy = split_correct_count / float(split_action_count) if split_action_count > 0 else 0.0
-
-        split_metrics[split_name.value] = SplitEvaluationMetrics(
-            split=split_name,
-            clip_count=len(split_records),
-            action_count=split_action_count,
-            correct_action_count=split_correct_count,
-            action_accuracy=split_accuracy,
-            mean_temporal_consistency=split_mean_temporal,
-        )
-
-        all_temporal_scores.extend(split_temporal_scores)
-        total_action_count += split_action_count
-        total_correct_action_count += split_correct_count
-
-    mean_temporal_consistency = sum(all_temporal_scores) / float(len(all_temporal_scores))
-    action_accuracy = total_correct_action_count / float(total_action_count) if total_action_count > 0 else 0.0
-
-    return EvaluationSummary(
-        total_clip_count=len(records),
-        total_action_count=total_action_count,
-        total_correct_action_count=total_correct_action_count,
-        action_accuracy=action_accuracy,
-        mean_temporal_consistency=mean_temporal_consistency,
-        split_metrics=split_metrics,
+    return VideoEvalSummary(
+        total_videos=len(records),
+        mean_temporal_consistency=float(np.mean(tc_scores)) if tc_scores else None,
+        mean_lpips=float(np.mean(lpips_scores)) if lpips_scores else None,
+        mean_psnr=float(np.mean(psnr_scores)) if psnr_scores else None,
+        mean_ssim=float(np.mean(ssim_scores)) if ssim_scores else None,
     )

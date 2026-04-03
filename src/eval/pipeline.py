@@ -1,133 +1,118 @@
-"""Offline evaluation pipeline from manifest + prediction records."""
+"""Evaluation pipeline: load generated videos and compute quality metrics."""
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Sequence
 
-from src.data.loader import ManifestDataset, ManifestSample
-from src.data.schema import SplitName
-from src.eval.metrics import EvaluationRecord
-from src.model.alignment import ActionAligner, align_manifest_sample
+import numpy as np
+
+from src.eval.metrics import VideoEvalRecord, evaluate_video_pair
+
+logger = logging.getLogger(__name__)
 
 
-@dataclass(slots=True, frozen=True)
-class PredictionRecord:
-    """Predicted actions for a single manifest clip."""
-
-    clip_id: str
-    predicted_action_ids: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        if not self.clip_id.strip():
-            raise ValueError("clip_id must be non-empty.")
-        if len(self.predicted_action_ids) == 0:
-            raise ValueError("predicted_action_ids must be non-empty.")
-
-
-def load_prediction_records(path: str | Path) -> tuple[PredictionRecord, ...]:
-    """Load prediction records keyed by clip ID."""
+def load_generation_manifest(path: str | Path) -> list[dict]:
+    """Load a generation manifest (output of ``scripts.predict``)."""
     input_path = Path(path)
     if not input_path.exists():
-        raise FileNotFoundError(f"prediction records not found: {input_path}")
+        raise FileNotFoundError(f"generation manifest not found: {input_path}")
 
     with input_path.open("r", encoding="utf-8") as fp:
         raw = json.load(fp)
     if not isinstance(raw, list):
-        raise ValueError("prediction records JSON root must be an array.")
-
-    records: list[PredictionRecord] = []
-    for entry in raw:
-        if not isinstance(entry, dict):
-            raise ValueError("each prediction record must be an object.")
-        predicted_raw = entry["predicted_action_ids"]
-        if not isinstance(predicted_raw, list):
-            raise ValueError("predicted_action_ids must be an array.")
-        records.append(
-            PredictionRecord(
-                clip_id=str(entry["clip_id"]),
-                predicted_action_ids=tuple(str(v) for v in predicted_raw),
-            )
-        )
-    return tuple(records)
+        raise ValueError("generation manifest must be a JSON array.")
+    return raw
 
 
-def _manifest_samples(
-    *,
-    manifest_path: str | Path,
-    split: SplitName | None,
-) -> tuple[ManifestSample, ...]:
-    dataset = ManifestDataset(manifest_path, split=split)
-    return tuple(dataset)
+def _load_frames_from_dir(frame_dir: str | Path) -> np.ndarray | None:
+    """Load PNG frames from a directory into a ``(T, H, W, 3)`` uint8 array."""
+    from PIL import Image
+
+    path = Path(frame_dir)
+    if not path.is_dir():
+        return None
+
+    frame_files = sorted(path.glob("frame_*.png"))
+    if not frame_files:
+        return None
+
+    frames = [np.array(Image.open(f).convert("RGB")) for f in frame_files]
+    return np.stack(frames)
 
 
-def _prediction_map(predictions: Sequence[PredictionRecord]) -> dict[str, PredictionRecord]:
-    by_clip: dict[str, PredictionRecord] = {}
-    for prediction in predictions:
-        if prediction.clip_id in by_clip:
-            raise ValueError(f"duplicate prediction clip_id: {prediction.clip_id}")
-        by_clip[prediction.clip_id] = prediction
-    return by_clip
+def _load_reference_frames(
+    video_path: str,
+    num_frames: int,
+    resolution: tuple[int, int] | None = None,
+) -> np.ndarray | None:
+    """Load reference frames from a source video file."""
+    if not video_path or not Path(video_path).exists():
+        return None
+
+    try:
+        from decord import VideoReader, cpu
+        import cv2
+
+        vr = VideoReader(video_path, ctx=cpu(0))
+        total = len(vr)
+        indices = np.linspace(0, total - 1, min(num_frames, total), dtype=int).tolist()
+        frames = vr.get_batch(indices).asnumpy()
+
+        if resolution:
+            h, w = resolution
+            frames = np.stack([
+                cv2.resize(f, (w, h), interpolation=cv2.INTER_LINEAR) for f in frames
+            ])
+
+        return frames
+    except (ImportError, Exception) as exc:
+        logger.warning("Could not load reference video %s: %s", video_path, exc)
+        return None
 
 
-def build_evaluation_records_from_manifest_predictions(
-    *,
-    manifest_path: str | Path,
-    predictions: Sequence[PredictionRecord],
-    split: SplitName | None = None,
-    require_all_clips: bool = True,
-    target_aligner: ActionAligner | None = None,
-) -> tuple[EvaluationRecord, ...]:
-    """Join manifest targets with predicted actions into evaluation records."""
-    if len(predictions) == 0:
-        raise ValueError("predictions must be non-empty.")
+def build_evaluation_records(
+    generation_manifest_path: str | Path,
+    reference_dataset_path: str | Path | None = None,
+) -> list[VideoEvalRecord]:
+    """Build evaluation records by comparing generated videos against references.
 
-    manifest_samples = _manifest_samples(manifest_path=manifest_path, split=split)
-    if len(manifest_samples) == 0:
-        raise ValueError("no manifest samples available for evaluation.")
-    samples_by_clip = {sample.clip_id: sample for sample in manifest_samples}
-    prediction_by_clip = _prediction_map(predictions)
+    If ``reference_dataset_path`` is provided, attempts to load original videos
+    from the NitroGen data directory for per-frame comparison. Otherwise, only
+    temporal consistency is computed.
+    """
+    manifest = load_generation_manifest(generation_manifest_path)
+    records: list[VideoEvalRecord] = []
 
-    unknown_clip_ids = sorted(set(prediction_by_clip.keys()).difference(samples_by_clip.keys()))
-    if unknown_clip_ids:
-        unknown_preview = ", ".join(unknown_clip_ids[:5])
-        raise ValueError(f"prediction clip_id not found in manifest split: {unknown_preview}")
+    for entry in manifest:
+        chunk_id = str(entry.get("chunk_id", ""))
+        game = str(entry.get("game", ""))
+        frames_dir = str(entry.get("frames_dir", ""))
+        num_frames = int(entry.get("num_frames", 0))
 
-    if require_all_clips:
-        missing_clip_ids = sorted(set(samples_by_clip.keys()).difference(prediction_by_clip.keys()))
-        if missing_clip_ids:
-            missing_preview = ", ".join(missing_clip_ids[:5])
-            raise ValueError(f"missing predictions for manifest clips: {missing_preview}")
-
-    records: list[EvaluationRecord] = []
-    for sample in manifest_samples:
-        prediction = prediction_by_clip.get(sample.clip_id)
-        if prediction is None:
+        if not frames_dir or num_frames == 0:
             continue
-        if target_aligner is not None:
-            aligned = align_manifest_sample(sample=sample, aligner=target_aligner)
-            target_action_ids = tuple(label.action_id for label in aligned.action_labels)
-            expected_len = len(aligned.action_labels)
-        else:
-            target_action_ids = sample.action_labels
-            expected_len = len(sample.action_labels)
-        if len(prediction.predicted_action_ids) != expected_len:
-            raise ValueError(
-                f"predicted_action_ids length mismatch for clip {prediction.clip_id}: "
-                f"expected {expected_len}, got {len(prediction.predicted_action_ids)}"
-            )
-        records.append(
-            EvaluationRecord(
-                episode_id=sample.episode_id,
-                clip_id=sample.clip_id,
-                split=sample.split,
-                target_action_ids=target_action_ids,
-                predicted_action_ids=prediction.predicted_action_ids,
-            )
-        )
-    if len(records) == 0:
-        raise ValueError("predictions did not match any manifest clips.")
-    return tuple(records)
 
+        gen_frames = _load_frames_from_dir(frames_dir)
+        if gen_frames is None:
+            continue
+
+        ref_frames = None
+        if reference_dataset_path:
+            video_path = entry.get("source_video_path", "")
+            if video_path:
+                ref_frames = _load_reference_frames(
+                    video_path, num_frames=len(gen_frames)
+                )
+
+        record = evaluate_video_pair(
+            chunk_id=chunk_id,
+            game=game,
+            generated_frames=gen_frames,
+            reference_frames=ref_frames,
+        )
+        records.append(record)
+
+    return records

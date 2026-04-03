@@ -1,39 +1,37 @@
-"""Offline evaluation utilities."""
+"""Video generation evaluation utilities."""
 
 from src.eval.metrics import (
-    EvaluationRecord,
-    EvaluationSummary,
-    SplitEvaluationMetrics,
-    compute_action_accuracy,
+    VideoEvalRecord,
+    VideoEvalSummary,
+    compute_lpips_score,
+    compute_psnr,
+    compute_ssim_simple,
     compute_temporal_consistency,
     evaluate_records,
+    evaluate_video_pair,
 )
 from src.eval.pipeline import (
-    PredictionRecord,
-    build_evaluation_records_from_manifest_predictions,
-    load_prediction_records,
+    build_evaluation_records,
+    load_generation_manifest,
 )
 from src.eval.report import (
-    EvaluationReport,
+    VideoEvalReport,
     build_evaluation_report,
-    evaluate_records_file,
-    load_evaluation_records,
     write_evaluation_report,
 )
 
 __all__ = [
-    "EvaluationRecord",
-    "EvaluationSummary",
-    "SplitEvaluationMetrics",
-    "compute_action_accuracy",
+    "VideoEvalRecord",
+    "VideoEvalReport",
+    "VideoEvalSummary",
+    "build_evaluation_records",
+    "build_evaluation_report",
+    "compute_lpips_score",
+    "compute_psnr",
+    "compute_ssim_simple",
     "compute_temporal_consistency",
     "evaluate_records",
-    "EvaluationReport",
-    "build_evaluation_report",
-    "evaluate_records_file",
-    "load_evaluation_records",
+    "evaluate_video_pair",
+    "load_generation_manifest",
     "write_evaluation_report",
-    "PredictionRecord",
-    "build_evaluation_records_from_manifest_predictions",
-    "load_prediction_records",
 ]
