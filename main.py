@@ -54,9 +54,30 @@ GENERATE_MAX_SAMPLES: int = 5
 # one split (e.g. train=0). Use "chunk" so train/val/test are spread across chunks.
 DATASET_SPLIT_GRANULARITY: str = "chunk"
 
+# If True, skip stages that are already satisfied on disk (faster re-runs).
+# Set False to force re-download and/or rebuild manifest (e.g. after changing shards/seed).
+SKIP_DOWNLOAD_IF_PRESENT: bool = True
+SKIP_MANIFEST_IF_PRESENT: bool = True
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent
+
+
+def _nitrogen_has_chunk_data(data_dir: Path) -> bool:
+    """Return True if ``data_dir`` already contains at least one NitroGen chunk (metadata.json)."""
+    if not data_dir.is_dir():
+        return False
+    for shard in sorted(data_dir.glob("SHARD_*")):
+        if not shard.is_dir():
+            continue
+        for video_dir in shard.iterdir():
+            if not video_dir.is_dir():
+                continue
+            for chunk_dir in video_dir.iterdir():
+                if chunk_dir.is_dir() and (chunk_dir / "metadata.json").is_file():
+                    return True
+    return False
 
 
 def run_pipeline() -> None:
@@ -83,30 +104,77 @@ def run_pipeline() -> None:
         raise FileNotFoundError(f"missing finetune template: {paths.finetune_config_template}")
 
     # --- Stage 1: Download NitroGen data ---
-    logger.info("[1/5] Downloading NitroGen data (shards=%s)...", DOWNLOAD_SHARDS)
     paths.nitrogen_data_dir.mkdir(parents=True, exist_ok=True)
-    download_stats = download_nitrogen(
-        output_dir=paths.nitrogen_data_dir,
-        shard_indices=DOWNLOAD_SHARDS,
-        download_videos=DOWNLOAD_VIDEOS,
-        max_chunks_per_shard=MAX_CHUNKS_PER_SHARD,
-    )
+    has_chunks = _nitrogen_has_chunk_data(paths.nitrogen_data_dir)
+    skip_dl = SKIP_DOWNLOAD_IF_PRESENT and has_chunks
+    if skip_dl:
+        logger.info(
+            "[1/5] Skipping download — NitroGen chunk data already under %s "
+            "(set SKIP_DOWNLOAD_IF_PRESENT=False to force).",
+            paths.nitrogen_data_dir,
+        )
+        download_stats = {"skipped": True, "reason": "existing_chunk_data"}
+    else:
+        shard_dirs = [p for p in paths.nitrogen_data_dir.glob("SHARD_*") if p.is_dir()]
+        logger.info(
+            "[1/5] Downloading NitroGen data (shards=%s)... "
+            "SKIP_DOWNLOAD_IF_PRESENT=%s, existing_SHARD_dirs=%d, has_chunk_data=%s",
+            DOWNLOAD_SHARDS,
+            SKIP_DOWNLOAD_IF_PRESENT,
+            len(shard_dirs),
+            has_chunks,
+        )
+        download_stats = download_nitrogen(
+            output_dir=paths.nitrogen_data_dir,
+            shard_indices=DOWNLOAD_SHARDS,
+            download_videos=DOWNLOAD_VIDEOS,
+            max_chunks_per_shard=MAX_CHUNKS_PER_SHARD,
+        )
+        try:
+            marker = paths.nitrogen_data_dir / ".nitrogen_prepared"
+            marker.write_text(
+                json.dumps(
+                    {
+                        "shards": DOWNLOAD_SHARDS,
+                        "max_chunks_per_shard": MAX_CHUNKS_PER_SHARD,
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
     logger.info("Download stats: %s", json.dumps(download_stats, indent=2))
 
     # --- Stage 2: Build manifest ---
-    logger.info("[2/5] Building dataset manifest...")
     paths.manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    ds_cfg = BuildDatasetConfig(
-        input_root=str(paths.nitrogen_data_dir),
-        output_manifest_path=str(paths.manifest_path),
-        seed=DATASET_SEED,
-        split_policy=SplitPolicy(train=TRAIN_RATIO, val=VAL_RATIO, test=TEST_RATIO),
-        split_granularity=DATASET_SPLIT_GRANULARITY,
-    )
-    manifest_obj = build_manifest(ds_cfg)
-    with paths.manifest_path.open("w", encoding="utf-8") as fp:
-        json.dump(manifest_obj, fp, indent=2)
-        fp.write("\n")
+    skip_mf = SKIP_MANIFEST_IF_PRESENT and paths.manifest_path.is_file()
+    if skip_mf:
+        logger.info(
+            "[2/5] Skipping manifest build — using existing %s "
+            "(set SKIP_MANIFEST_IF_PRESENT=False to rebuild).",
+            paths.manifest_path,
+        )
+        with paths.manifest_path.open("r", encoding="utf-8") as fp:
+            manifest_obj = json.load(fp)
+        if not isinstance(manifest_obj, dict) or "total_chunks" not in manifest_obj:
+            raise ValueError(
+                f"invalid manifest at {paths.manifest_path}; delete it or set SKIP_MANIFEST_IF_PRESENT=False"
+            )
+    else:
+        logger.info("[2/5] Building dataset manifest...")
+        ds_cfg = BuildDatasetConfig(
+            input_root=str(paths.nitrogen_data_dir),
+            output_manifest_path=str(paths.manifest_path),
+            seed=DATASET_SEED,
+            split_policy=SplitPolicy(train=TRAIN_RATIO, val=VAL_RATIO, test=TEST_RATIO),
+            split_granularity=DATASET_SPLIT_GRANULARITY,
+        )
+        manifest_obj = build_manifest(ds_cfg)
+        with paths.manifest_path.open("w", encoding="utf-8") as fp:
+            json.dump(manifest_obj, fp, indent=2)
+            fp.write("\n")
     logger.info("Manifest: %d chunks, splits=%s", manifest_obj["total_chunks"], manifest_obj["split_counts"])
 
     # --- Stage 3: Fine-tune HunyuanVideo with LoRA ---
