@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Iterator, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -83,7 +83,7 @@ def _parse_actions_parquet(parquet_path: Path) -> tuple[GamepadAction, ...]:
     return tuple(actions)
 
 
-def discover_chunks(data_dir: str | Path) -> list[Path]:
+def discover_chunks(data_dir: Union[str, Path]) -> list[Path]:
     """Walk the NitroGen data directory and return paths to all chunk directories.
 
     Expects ``data_dir/SHARD_XXXX/<video_id>/<chunk_id>/`` layout.
@@ -112,7 +112,7 @@ def load_video_chunk(
     chunk_dir: Path,
     split: SplitName,
     use_processed_actions: bool = True,
-) -> VideoChunk | None:
+) -> Optional[VideoChunk]:
     """Load a single video chunk from its directory. Returns ``None`` if missing data."""
     meta_path = chunk_dir / "metadata.json"
     if not meta_path.exists():
@@ -153,26 +153,34 @@ class NitroGenDataset(Sequence[VideoChunk]):
 
     def __init__(
         self,
-        data_dir: str | Path,
-        split: SplitName | None = None,
-        split_policy: SplitPolicy | None = None,
+        data_dir: Union[str, Path],
+        split: Optional[SplitName] = None,
+        split_policy: Optional[SplitPolicy] = None,
         seed: int = 42,
-        game_filter: str | None = None,
-        max_chunks: int | None = None,
+        game_filter: Optional[str] = None,
+        max_chunks: Optional[int] = None,
         use_processed_actions: bool = True,
+        split_granularity: str = "video",
     ) -> None:
+        if split_granularity not in ("video", "chunk"):
+            raise ValueError("split_granularity must be 'video' or 'chunk'.")
+
         self._data_dir = Path(data_dir)
         self._use_processed = use_processed_actions
 
         policy = split_policy or SplitPolicy(train=0.8, val=0.1, test=0.1)
-        assigner = VideoSplitAssigner(policy=policy, seed=seed)
+        assigner = VideoSplitAssigner(policy=policy, seed=seed, granularity=split_granularity)
 
         chunk_dirs = discover_chunks(data_dir)
         chunks: list[VideoChunk] = []
 
         for chunk_dir in chunk_dirs:
             video_id = chunk_dir.parent.name
-            assigned_split = assigner.assign(video_id)
+            chunk_id = chunk_dir.name
+            if split_granularity == "chunk":
+                assigned_split = assigner.assign(video_id, chunk_id)
+            else:
+                assigned_split = assigner.assign(video_id)
 
             if split is not None and assigned_split is not split:
                 continue
