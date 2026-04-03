@@ -1,26 +1,11 @@
-"""Model and adaptation interfaces."""
+"""Model and action encoding interfaces."""
 
-from src.model.alignment import (
-    AlignedActionRecord,
-    AlignedManifestSample,
-    AlignmentBatch,
-    AlignmentSummary,
-    RawActionRecord,
-    VocabularyActionAligner,
-    align_action_texts_to_labels,
-    align_manifest_sample,
-    to_action_labels,
+from src.model.action_encoder import (
+    ActionEncoder,
+    GamepadActionEncoder,
 )
 
 __all__ = [
-    "AlignedActionRecord",
-    "AlignedManifestSample",
-    "AlignmentBatch",
-    "AlignmentSummary",
-    "RawActionRecord",
-    "VocabularyActionAligner",
-    "align_action_texts_to_labels",
-    "align_manifest_sample",
-    "to_action_labels",
+    "ActionEncoder",
+    "GamepadActionEncoder",
 ]
-
