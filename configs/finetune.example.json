@@ -4,12 +4,12 @@
   "model_id": "hunyuanvideo-community/HunyuanVideo",
 
   "training_type": "lora",
-  "lora_rank": 128,
-  "lora_alpha": 128,
+  "lora_rank": 32,
+  "lora_alpha": 32,
   "target_modules": ["to_q", "to_k", "to_v", "to_out.0"],
 
-  "resolution": [480, 720],
-  "num_frames": 49,
+  "resolution": [160, 288],
+  "num_frames": 13,
 
   "learning_rate": 2e-5,
   "num_train_steps": 5000,

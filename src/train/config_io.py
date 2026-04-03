@@ -24,8 +24,8 @@ def load_json_object(path: Path) -> dict[str, Any]:
 class LoRAConfig:
     """LoRA adapter configuration."""
 
-    rank: int = 128
-    alpha: int = 128
+    rank: int = 32
+    alpha: int = 32
     target_modules: tuple[str, ...] = ("to_q", "to_k", "to_v", "to_out.0")
 
 
@@ -40,8 +40,9 @@ class VideoGenConfig:
     training_type: str = "lora"
     lora: LoRAConfig = LoRAConfig()
 
-    resolution: tuple[int, int] = (480, 720)
-    num_frames: int = 49
+    # Tight defaults (~20–24GB); raise resolution/frames/rank when you have headroom.
+    resolution: tuple[int, int] = (160, 288)
+    num_frames: int = 13
 
     learning_rate: float = 2e-5
     num_train_steps: int = 5000
@@ -88,8 +89,8 @@ def load_videogen_config(path: Path) -> VideoGenConfig:
             raise ValueError(f"config missing required key: {key}")
 
     lora_cfg = LoRAConfig(
-        rank=int(raw.get("lora_rank", 128)),
-        alpha=int(raw.get("lora_alpha", 128)),
+        rank=int(raw.get("lora_rank", 32)),
+        alpha=int(raw.get("lora_alpha", 32)),
         target_modules=tuple(raw.get("target_modules", ["to_q", "to_k", "to_v", "to_out.0"])),
     )
 
@@ -100,7 +101,7 @@ def load_videogen_config(path: Path) -> VideoGenConfig:
         test=float(sp_raw.get("test", 0.1)),
     )
 
-    res_raw = raw.get("resolution", [480, 720])
+    res_raw = raw.get("resolution", [160, 288])
     resolution = (int(res_raw[0]), int(res_raw[1]))
 
     sg = str(raw.get("split_granularity", "video"))
@@ -114,7 +115,7 @@ def load_videogen_config(path: Path) -> VideoGenConfig:
         training_type=str(raw.get("training_type", "lora")),
         lora=lora_cfg,
         resolution=resolution,
-        num_frames=int(raw.get("num_frames", 49)),
+        num_frames=int(raw.get("num_frames", 13)),
         learning_rate=float(raw.get("learning_rate", 2e-5)),
         num_train_steps=int(raw.get("num_train_steps", 5000)),
         gradient_accumulation_steps=int(raw.get("gradient_accumulation_steps", 4)),
