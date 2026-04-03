@@ -1,22 +1,41 @@
 {
-  "manifest_path": "data/processed/manifest.json",
+  "dataset_path": "data/nitrogen",
   "output_dir": "outputs/run1",
-  "model_id": "google/vit-base-patch16-224",
-  "action_mapping": {
-    "walk left": "move_left",
-    "walk right": "move_right",
-    "jump": "jump"
+  "model_id": "tencent/HunyuanVideo",
+
+  "training_type": "lora",
+  "lora_rank": 128,
+  "lora_alpha": 128,
+  "target_modules": ["to_q", "to_k", "to_v", "to_out.0"],
+
+  "resolution": [480, 720],
+  "num_frames": 49,
+
+  "learning_rate": 2e-5,
+  "num_train_steps": 5000,
+  "gradient_accumulation_steps": 4,
+  "batch_size": 1,
+  "gradient_checkpointing": true,
+  "quantization": "nf4",
+  "mixed_precision": "bf16",
+
+  "action_encoding": "text",
+  "prompt_template": "Gameplay video of {game}.",
+  "joystick_deadzone": 0.2,
+
+  "split_seed": 42,
+  "split_policy": {
+    "train": 0.8,
+    "val": 0.1,
+    "test": 0.1
   },
-  "action_aliases": {},
-  "unknown_action_id": "unknown",
-  "confidence_floor": 0.0,
-  "num_train_epochs": 2.0,
-  "per_device_train_batch_size": 4,
-  "per_device_eval_batch_size": 4,
-  "learning_rate": 5e-5,
+
+  "game_filter": null,
+  "max_train_chunks": null,
+  "max_val_chunks": null,
+  "use_processed_actions": true,
+
   "logging_steps": 10,
-  "seed": 42,
-  "run_validation": true,
-  "max_train_clips": null,
-  "max_val_clips": null
+  "save_steps": 500,
+  "seed": 42
 }
