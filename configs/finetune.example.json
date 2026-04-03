@@ -1,7 +1,7 @@
 {
   "dataset_path": "data/nitrogen",
   "output_dir": "outputs/run1",
-  "model_id": "tencent/HunyuanVideo",
+  "model_id": "hunyuanvideo-community/HunyuanVideo",
 
   "training_type": "lora",
   "lora_rank": 128,
