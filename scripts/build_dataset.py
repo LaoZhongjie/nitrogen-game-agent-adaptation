@@ -19,7 +19,7 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 if __package__ in {None, ""}:
     repo_root = Path(__file__).resolve().parents[1]
@@ -30,7 +30,7 @@ from src.data.schema import SplitName, SplitPolicy
 from src.data.split import VideoSplitAssigner
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class BuildDatasetConfig:
     """Config for NitroGen dataset manifest construction."""
 
@@ -38,8 +38,8 @@ class BuildDatasetConfig:
     output_manifest_path: str
     seed: int
     split_policy: SplitPolicy
-    game_filter: str | None = None
-    max_chunks: int | None = None
+    game_filter: Optional[str] = None
+    max_chunks: Optional[int] = None
     use_processed_actions: bool = True
 
 

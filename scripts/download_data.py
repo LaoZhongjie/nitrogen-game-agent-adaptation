@@ -21,6 +21,7 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path
+from typing import List, Optional, Union
 
 if __package__ in {None, ""}:
     repo_root = Path(__file__).resolve().parents[1]
@@ -49,7 +50,7 @@ def _download_shard_archive(
 def _extract_shard(archive_path: Path, output_dir: Path) -> Path:
     """Extract a shard archive into ``output_dir`` and return shard root."""
     with tarfile.open(archive_path, "r:gz") as tar:
-        tar.extractall(path=str(output_dir), filter="data")
+        tar.extractall(path=str(output_dir))
     shard_dirs = sorted(
         [p for p in output_dir.iterdir() if p.is_dir() and p.name.startswith("SHARD_")]
     )
@@ -76,8 +77,8 @@ def _process_shard(
     shard_dir: Path,
     output_dir: Path,
     download_videos: bool,
-    max_chunks: int | None,
-    game_filter: str | None,
+    max_chunks: Optional[int],
+    game_filter: Optional[str],
 ) -> dict[str, int]:
     """Walk a shard directory, copy annotations, optionally download videos."""
     stats = {"chunks_processed": 0, "chunks_skipped": 0, "videos_downloaded": 0, "videos_failed": 0}
@@ -134,11 +135,11 @@ def _process_shard(
 
 
 def download_nitrogen(
-    output_dir: str | Path,
-    shard_indices: list[int] | None = None,
+    output_dir: Union[str, Path],
+    shard_indices: Optional[List[int]] = None,
     download_videos: bool = False,
-    max_chunks_per_shard: int | None = None,
-    game_filter: str | None = None,
+    max_chunks_per_shard: Optional[int] = None,
+    game_filter: Optional[str] = None,
     dataset_id: str = "nvidia/NitroGen",
 ) -> dict[str, int]:
     """Download and prepare NitroGen shards.

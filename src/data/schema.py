@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Mapping, Sequence
+from typing import Mapping, Optional, Sequence, Tuple
 
 
 class SplitName(str, Enum):
@@ -15,7 +15,7 @@ class SplitName(str, Enum):
     TEST = "test"
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class SplitPolicy:
     """Video-level split policy ratios."""
 
@@ -57,7 +57,7 @@ NUM_BUTTONS: int = len(BUTTON_COLUMNS)
 NUM_JOYSTICK_AXES: int = 4  # j_left (x,y) + j_right (x,y)
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class GamepadAction:
     """Single-frame gamepad state from the NitroGen dataset.
 
@@ -81,7 +81,7 @@ class GamepadAction:
                 raise ValueError(f"joystick value must be in [-1.0, 1.0], got {val}.")
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class ChunkMetadata:
     """Metadata for a single NitroGen 20-second video chunk."""
 
@@ -99,8 +99,8 @@ class ChunkMetadata:
     duration: float
     start_frame: int
     end_frame: int
-    bbox_game_area: Mapping[str, float] | None = None
-    bbox_controller_overlay: tuple[float, ...] | None = None
+    bbox_game_area: Optional[Mapping[str, float]] = None
+    bbox_controller_overlay: Optional[Tuple[float, ...]] = None
 
     def __post_init__(self) -> None:
         if not self.uuid.strip():
@@ -109,7 +109,7 @@ class ChunkMetadata:
             raise ValueError("chunk_size must be > 0.")
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class VideoChunk:
     """A processed NitroGen video chunk ready for training.
 
@@ -135,7 +135,7 @@ class VideoChunk:
             raise ValueError("actions must be non-empty.")
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class TrainingSample:
     """A single training pair for the world model: action conditioning + video target.
 

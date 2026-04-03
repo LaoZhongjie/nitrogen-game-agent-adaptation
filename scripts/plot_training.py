@@ -37,7 +37,7 @@ except ImportError:
 
 import csv
 import json
-from typing import Any
+from typing import Any, Dict, Optional, Union
 
 
 # ── Consistent style ────────────────────────────────────────────────────────
@@ -202,7 +202,7 @@ def plot_epoch_duration(epoch_data: list[dict], out: Path) -> None:
 def plot_dashboard(
     step_data: list[dict],
     epoch_data: list[dict],
-    metrics: dict[str, Any] | None,
+    metrics: Optional[Dict[str, Any]],
     out: Path,
 ) -> None:
     """All-in-one 2x2 summary dashboard."""
@@ -277,7 +277,7 @@ def plot_dashboard(
     plt.close(fig)
 
 
-def _fmt_duration(seconds: float | None) -> str:
+def _fmt_duration(seconds: Optional[float]) -> str:
     if seconds is None:
         return "N/A"
     h = int(seconds // 3600)
@@ -292,7 +292,7 @@ def _fmt_duration(seconds: float | None) -> str:
 
 # ── Main entry ──────────────────────────────────────────────────────────────
 
-def generate_plots(run_dir: str | Path) -> Path:
+def generate_plots(run_dir: Union[str, Path]) -> Path:
     """Read training logs from ``run_dir`` and write PNGs to ``run_dir/plots/``.
 
     Returns the plots directory path.
@@ -309,7 +309,7 @@ def generate_plots(run_dir: str | Path) -> Path:
 
     step_data: list[dict] = []
     epoch_data: list[dict] = []
-    metrics: dict[str, Any] | None = None
+    metrics: Optional[Dict[str, Any]] = None
 
     if step_csv.exists():
         step_data = _read_step_csv(step_csv)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from src.data.schema import SplitPolicy
 from src.model.action_encoder import GamepadActionEncoder
@@ -20,7 +20,7 @@ def load_json_object(path: Path) -> dict[str, Any]:
     return raw
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class LoRAConfig:
     """LoRA adapter configuration."""
 
@@ -29,7 +29,7 @@ class LoRAConfig:
     target_modules: tuple[str, ...] = ("to_q", "to_k", "to_v", "to_out.0")
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class VideoGenConfig:
     """Full configuration for HunyuanVideo fine-tuning."""
 
@@ -58,9 +58,9 @@ class VideoGenConfig:
     split_seed: int = 42
     split_policy: SplitPolicy = SplitPolicy(train=0.8, val=0.1, test=0.1)
 
-    game_filter: str | None = None
-    max_train_chunks: int | None = None
-    max_val_chunks: int | None = None
+    game_filter: Optional[str] = None
+    max_train_chunks: Optional[int] = None
+    max_val_chunks: Optional[int] = None
     use_processed_actions: bool = True
 
     logging_steps: int = 10

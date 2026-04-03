@@ -5,18 +5,18 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Optional, Sequence
 
 from src.data.schema import SplitName
 from src.eval.metrics import VideoEvalRecord, VideoEvalSummary, evaluate_records
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class VideoEvalReport:
     """Serializable evaluation report for video generation."""
 
     schema_version: str
-    evaluated_split: str | None
+    evaluated_split: Optional[str]
     generation_manifest_path: str
     output_report_path: str
     summary: VideoEvalSummary
@@ -54,7 +54,7 @@ def build_evaluation_report(
     records: Sequence[VideoEvalRecord],
     generation_manifest_path: str,
     output_report_path: str,
-    split: SplitName | None = None,
+    split: Optional[SplitName] = None,
 ) -> VideoEvalReport:
     """Build a typed video generation evaluation report."""
     summary = evaluate_records(records)

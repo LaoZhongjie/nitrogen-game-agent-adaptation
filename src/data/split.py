@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from src.data.schema import SplitName, SplitPolicy
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class VideoSplitAssigner:
     """Assign a deterministic split to each video ID via SHA-256 hashing."""
 

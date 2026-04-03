@@ -14,7 +14,7 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -191,9 +191,9 @@ def _apply_lora(model: Any, config: VideoGenConfig) -> Any:
 
 def _run_validation(
     model: Any,
-    val_loader: DataLoader | None,
+    val_loader: Optional[DataLoader],
     device: torch.device,
-) -> float | None:
+) -> Optional[float]:
     """Compute mean diffusion loss on the validation set."""
     if val_loader is None or len(val_loader) == 0:
         return None
@@ -268,7 +268,7 @@ def run_hunyuanvideo_lora_finetune(config: VideoGenConfig) -> dict[str, Any]:
         pin_memory=True,
     )
 
-    val_loader: DataLoader | None = None
+    val_loader: Optional[DataLoader] = None
     if val_samples:
         val_dataset = VideoActionDataset(samples=val_samples, action_encoder=action_encoder)
         val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=0)
@@ -520,12 +520,12 @@ def _config_to_dict(config: VideoGenConfig) -> dict[str, Any]:
 
 
 def generate_video(
-    model_dir: str | Path,
+    model_dir: Union[str, Path],
     prompt: str,
     num_frames: int = 49,
     resolution: tuple[int, int] = (480, 720),
     seed: int = 42,
-) -> np.ndarray | None:
+) -> Optional[np.ndarray]:
     """Generate a video from a text prompt using a fine-tuned HunyuanVideo model.
 
     Returns frames as ``(T, H, W, 3)`` uint8 array, or ``None`` if generation fails.

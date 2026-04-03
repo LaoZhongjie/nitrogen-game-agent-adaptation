@@ -12,6 +12,7 @@ import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PipelinePaths:
     """Filesystem locations for one end-to-end run."""
 
@@ -45,7 +46,7 @@ TEST_RATIO: float = 0.1
 
 DOWNLOAD_SHARDS: list[int] = [0]
 DOWNLOAD_VIDEOS: bool = True
-MAX_CHUNKS_PER_SHARD: int | None = 50
+MAX_CHUNKS_PER_SHARD: Optional[int] = 50
 
 GENERATE_MAX_SAMPLES: int = 5
 

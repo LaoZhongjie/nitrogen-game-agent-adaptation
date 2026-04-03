@@ -10,14 +10,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class VideoEvalRecord:
     """Evaluation result for a single generated video."""
 
@@ -25,24 +25,24 @@ class VideoEvalRecord:
     game: str
     num_frames_generated: int
     num_frames_reference: int
-    fid_per_frame: float | None = None
-    lpips_mean: float | None = None
-    temporal_consistency: float | None = None
-    psnr_mean: float | None = None
-    ssim_mean: float | None = None
+    fid_per_frame: Optional[float] = None
+    lpips_mean: Optional[float] = None
+    temporal_consistency: Optional[float] = None
+    psnr_mean: Optional[float] = None
+    ssim_mean: Optional[float] = None
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class VideoEvalSummary:
     """Aggregated metrics across all evaluated videos."""
 
     total_videos: int
-    mean_fid: float | None = None
-    mean_lpips: float | None = None
-    mean_temporal_consistency: float | None = None
-    mean_psnr: float | None = None
-    mean_ssim: float | None = None
-    fvd: float | None = None
+    mean_fid: Optional[float] = None
+    mean_lpips: Optional[float] = None
+    mean_temporal_consistency: Optional[float] = None
+    mean_psnr: Optional[float] = None
+    mean_ssim: Optional[float] = None
+    fvd: Optional[float] = None
 
 
 def compute_psnr(img1: np.ndarray, img2: np.ndarray) -> float:
@@ -96,7 +96,7 @@ def compute_temporal_consistency(frames: np.ndarray) -> float:
 def compute_lpips_score(
     gen_frames: np.ndarray,
     ref_frames: np.ndarray,
-) -> float | None:
+) -> Optional[float]:
     """Compute mean LPIPS between generated and reference frames.
 
     Requires ``lpips`` and ``torch``. Returns ``None`` if not available.
@@ -154,7 +154,7 @@ def evaluate_video_pair(
     chunk_id: str,
     game: str,
     generated_frames: np.ndarray,
-    reference_frames: np.ndarray | None = None,
+    reference_frames: Optional[np.ndarray] = None,
 ) -> VideoEvalRecord:
     """Evaluate a single generated video against an optional reference."""
     num_gen = len(generated_frames)

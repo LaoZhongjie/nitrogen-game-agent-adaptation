@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Sequence
+from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -14,7 +14,7 @@ from src.eval.metrics import VideoEvalRecord, evaluate_video_pair
 logger = logging.getLogger(__name__)
 
 
-def load_generation_manifest(path: str | Path) -> list[dict]:
+def load_generation_manifest(path: Union[str, Path]) -> List[dict]:
     """Load a generation manifest (output of ``scripts.predict``)."""
     input_path = Path(path)
     if not input_path.exists():
@@ -27,7 +27,7 @@ def load_generation_manifest(path: str | Path) -> list[dict]:
     return raw
 
 
-def _load_frames_from_dir(frame_dir: str | Path) -> np.ndarray | None:
+def _load_frames_from_dir(frame_dir: Union[str, Path]) -> Optional[np.ndarray]:
     """Load PNG frames from a directory into a ``(T, H, W, 3)`` uint8 array."""
     from PIL import Image
 
@@ -46,8 +46,8 @@ def _load_frames_from_dir(frame_dir: str | Path) -> np.ndarray | None:
 def _load_reference_frames(
     video_path: str,
     num_frames: int,
-    resolution: tuple[int, int] | None = None,
-) -> np.ndarray | None:
+    resolution: Optional[Tuple[int, int]] = None,
+) -> Optional[np.ndarray]:
     """Load reference frames from a source video file."""
     if not video_path or not Path(video_path).exists():
         return None
@@ -74,9 +74,9 @@ def _load_reference_frames(
 
 
 def build_evaluation_records(
-    generation_manifest_path: str | Path,
-    reference_dataset_path: str | Path | None = None,
-) -> list[VideoEvalRecord]:
+    generation_manifest_path: Union[str, Path],
+    reference_dataset_path: Optional[Union[str, Path]] = None,
+) -> List[VideoEvalRecord]:
     """Build evaluation records by comparing generated videos against references.
 
     If ``reference_dataset_path`` is provided, attempts to load original videos

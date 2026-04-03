@@ -73,7 +73,7 @@ def _joystick_direction(x: float, y: float, deadzone: float = 0.2) -> str:
 def _summarize_action_text(action: GamepadAction) -> str:
     """Describe a single gamepad frame as a short text string."""
     pressed: list[str] = []
-    for col, val in zip(BUTTON_COLUMNS, action.buttons, strict=True):
+    for col, val in zip(BUTTON_COLUMNS, action.buttons):
         if val:
             pressed.append(BUTTON_DISPLAY_NAMES.get(col, col))
 
@@ -110,7 +110,7 @@ def _detect_segments(actions: Sequence[GamepadAction]) -> list[tuple[int, int, s
     return segments
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class GamepadActionEncoder:
     """Default encoder that supports both text and vector output modes.
 
