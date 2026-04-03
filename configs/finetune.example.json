@@ -18,6 +18,10 @@
   "gradient_checkpointing": true,
   "quantization": "nf4",
   "mixed_precision": "bf16",
+  "llama_max_sequence_length": 96,
+  "clip_pooler_prompt": "Gameplay video.",
+  "vae_memory_saving": true,
+  "show_training_progress": true,
 
   "action_encoding": "text",
   "prompt_template": "Gameplay video of {game}.",

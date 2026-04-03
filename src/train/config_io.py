@@ -51,6 +51,15 @@ class VideoGenConfig:
     quantization: str = "nf4"
     mixed_precision: str = "bf16"
 
+    # Shorter = less cross-attn memory in the transformer (Llama prompt side).
+    llama_max_sequence_length: int = 96
+    # CLIP (text_encoder_2) max 77 tokens — use a short fixed string for pooled embeds only.
+    clip_pooler_prompt: str = "Gameplay video."
+    # Slice/tile VAE encode to cut peak VRAM (slightly slower).
+    vae_memory_saving: bool = True
+    # Terminal step progress bar (tqdm); set false for log-only runs.
+    show_training_progress: bool = True
+
     action_encoding: str = "text"
     prompt_template: str = "Gameplay video of {game}."
     joystick_deadzone: float = 0.2
@@ -113,6 +122,10 @@ def load_videogen_config(path: Path) -> VideoGenConfig:
         gradient_checkpointing=bool(raw.get("gradient_checkpointing", True)),
         quantization=str(raw.get("quantization", "nf4")),
         mixed_precision=str(raw.get("mixed_precision", "bf16")),
+        llama_max_sequence_length=int(raw.get("llama_max_sequence_length", 96)),
+        clip_pooler_prompt=str(raw.get("clip_pooler_prompt", "Gameplay video.")),
+        vae_memory_saving=bool(raw.get("vae_memory_saving", True)),
+        show_training_progress=bool(raw.get("show_training_progress", True)),
         action_encoding=str(raw.get("action_encoding", "text")),
         prompt_template=str(raw.get("prompt_template", "Gameplay video of {game}.")),
         joystick_deadzone=float(raw.get("joystick_deadzone", 0.2)),
