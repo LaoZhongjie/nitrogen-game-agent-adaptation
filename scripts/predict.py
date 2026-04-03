@@ -104,12 +104,14 @@ def main() -> None:
     encoder = GamepadActionEncoder()
     split = SplitName(args.split)
 
+    split_granularity = getattr(config, "split_granularity", "video") if config_path.exists() else "video"
     dataset = NitroGenDataset(
         data_dir=args.dataset_path,
         split=split,
         split_policy=split_policy,
         seed=split_seed,
         max_chunks=args.max_samples,
+        split_granularity=split_granularity,
     )
 
     results: list[dict[str, str]] = []
