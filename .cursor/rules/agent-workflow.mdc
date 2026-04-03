@@ -1,0 +1,48 @@
+---
+description: Agent workflow, environment defaults, collaboration and Git habits
+alwaysApply: true
+---
+
+# Environment
+
+- **Python**: conda (`/opt/anaconda3`). Align with project expectations (e.g. Python 3.12 where the repo specifies it).
+- **Node.js**: nvm — load with `. ~/.nvm/nvm.sh` before using `node` / `npm` in a shell.
+- **Git author (when committing for this repo)**: `LaoZhongjie` / `laozhongjie@u.nus.edu` — use only if configuring or amending commits in this workspace; user may override.
+
+# Core behavior
+
+- Think before acting. **Read existing files before writing code.**
+- **Prefer editing** over rewriting whole files.
+- Keep solutions **simple and direct**.
+- Be **concise in replies** but **thorough in reasoning** (when reasoning is needed).
+
+# Workflow (strict order)
+
+1. **Explore** — read relevant files.
+2. **Plan** — state the plan **explicitly** before coding.
+3. **Implement** — smallest meaningful change; no unrelated edits.
+4. **Verify** — run tests or otherwise validate; do not claim “done” without checking.
+5. **Commit** — after a coherent unit of work, with a clear message.
+
+# Scope and context
+
+- Modify **only** files relevant to the task. Do **not** change architecture unless asked.
+- **Do not re-read** files unless they may have changed or the task requires it.
+
+# Uncertainty
+
+- Do **not** invent missing context.
+- **Ask** when requirements are ambiguous.
+
+# Output style
+
+- No sycophantic openers or filler closings.
+
+# Git
+
+- Commit after completing a **meaningful unit** of work.
+- Messages: **clear and concise** (imperative mood, one logical change per commit when possible).
+
+# Priority
+
+**User instructions always override this rule.**
