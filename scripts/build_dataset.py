@@ -41,17 +41,25 @@ class BuildDatasetConfig:
     game_filter: Optional[str] = None
     max_chunks: Optional[int] = None
     use_processed_actions: bool = True
+    split_granularity: str = "video"
 
 
 def build_manifest(config: BuildDatasetConfig) -> dict[str, Any]:
     """Construct a chunk-level manifest from a NitroGen data directory."""
+    if config.split_granularity not in ("video", "chunk"):
+        raise ValueError("split_granularity must be 'video' or 'chunk'.")
+
     input_root = Path(config.input_root)
     if not input_root.exists():
         raise ValueError(f"input root does not exist: {input_root}")
     if not input_root.is_dir():
         raise ValueError(f"input root is not a directory: {input_root}")
 
-    assigner = VideoSplitAssigner(policy=config.split_policy, seed=config.seed)
+    assigner = VideoSplitAssigner(
+        policy=config.split_policy,
+        seed=config.seed,
+        granularity=config.split_granularity,
+    )
     chunk_dirs = discover_chunks(config.input_root)
 
     chunks: list[dict[str, Any]] = []
@@ -63,8 +71,12 @@ def build_manifest(config: BuildDatasetConfig) -> dict[str, Any]:
             break
 
         video_id = chunk_dir.parent.name
-        split = assigner.assign(video_id)
-        video_splits[video_id] = split.value
+        chunk_id = chunk_dir.name
+        if config.split_granularity == "chunk":
+            split = assigner.assign(video_id, chunk_id)
+        else:
+            split = assigner.assign(video_id)
+            video_splits[video_id] = split.value
 
         chunk = load_video_chunk(
             chunk_dir,
@@ -109,6 +121,7 @@ def build_manifest(config: BuildDatasetConfig) -> dict[str, Any]:
             "test": config.split_policy.test,
             "seed": config.seed,
         },
+        "split_granularity": config.split_granularity,
         "video_splits": video_splits,
         "split_counts": split_counts,
         "games": sorted(games_seen),
@@ -127,6 +140,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test", type=float, default=0.1, help="Test split ratio.")
     parser.add_argument("--game-filter", type=str, default=None, help="Only include this game.")
     parser.add_argument("--max-chunks", type=int, default=None, help="Limit total chunks.")
+    parser.add_argument(
+        "--split-granularity",
+        choices=["video", "chunk"],
+        default="video",
+        help="Split by video (default) or by chunk (better spread for small downloads).",
+    )
     return parser.parse_args()
 
 
@@ -139,6 +158,7 @@ def main() -> None:
         split_policy=SplitPolicy(train=float(args.train), val=float(args.val), test=float(args.test)),
         game_filter=args.game_filter,
         max_chunks=args.max_chunks,
+        split_granularity=str(args.split_granularity),
     )
     manifest = build_manifest(config)
 
