@@ -49,7 +49,7 @@ Key config fields in `configs/finetune.example.json`:
 
 | Field | Description |
 |-------|-------------|
-| `model_id` | HuggingFace model ID (default: `tencent/HunyuanVideo`) |
+| `model_id` | HuggingFace model ID (use Diffusers layout, e.g. `hunyuanvideo-community/HunyuanVideo`) |
 | `training_type` | `lora` or `full` |
 | `lora_rank` / `lora_alpha` | LoRA hyperparameters |
 | `resolution` | Target video resolution `[H, W]` |
