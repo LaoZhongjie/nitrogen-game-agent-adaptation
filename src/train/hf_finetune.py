@@ -191,6 +191,7 @@ def _collect_training_samples(
         game_filter=config.game_filter,
         max_chunks=max_chunks,
         use_processed_actions=config.use_processed_actions,
+        split_granularity=config.split_granularity,
     )
 
     samples: list[TrainingSample] = []
@@ -607,6 +608,7 @@ def _config_to_dict(config: VideoGenConfig) -> dict[str, Any]:
             "val": config.split_policy.val,
             "test": config.split_policy.test,
         },
+        "split_granularity": config.split_granularity,
         "game_filter": config.game_filter,
         "max_train_chunks": config.max_train_chunks,
         "max_val_chunks": config.max_val_chunks,
