@@ -657,6 +657,15 @@ def _config_to_dict(config: VideoGenConfig) -> dict[str, Any]:
     }
 
 
+def _default_hunyuan_model_id() -> str:
+    """HF repo id with Diffusers layout (``model_index.json`` at repo root).
+
+    ``tencent/HunyuanVideo`` is the upstream release; weights live under subfolders
+    and are not a Diffusers single-folder checkpoint. Use the community mirror.
+    """
+    return "hunyuanvideo-community/HunyuanVideo"
+
+
 def generate_video(
     model_dir: Union[str, Path],
     prompt: str,
@@ -683,9 +692,9 @@ def generate_video(
     if config_path.exists():
         with config_path.open("r", encoding="utf-8") as fp:
             raw_config = json.load(fp)
-        base_model_id = raw_config.get("model_id", "tencent/HunyuanVideo")
+        base_model_id = raw_config.get("model_id", _default_hunyuan_model_id())
     else:
-        base_model_id = "tencent/HunyuanVideo"
+        base_model_id = _default_hunyuan_model_id()
 
     try:
         pipe = HunyuanVideoPipeline.from_pretrained(base_model_id, torch_dtype=torch.bfloat16)
