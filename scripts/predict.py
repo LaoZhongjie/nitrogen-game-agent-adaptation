@@ -149,6 +149,7 @@ def main() -> None:
                 "chunk_id": chunk.chunk_id,
                 "game": chunk.game,
                 "prompt": prompt,
+                "source_video_path": chunk.video_path,
                 "frames_dir": str(frame_dir),
                 "num_frames": len(frames),
             })
@@ -158,6 +159,7 @@ def main() -> None:
                 "chunk_id": chunk.chunk_id,
                 "game": chunk.game,
                 "prompt": prompt,
+                "source_video_path": chunk.video_path,
                 "frames_dir": "",
                 "num_frames": 0,
             })

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+import numpy as np
+
 from src.data.schema import SplitName
 from src.eval.metrics import VideoEvalRecord, VideoEvalSummary, evaluate_records
 
@@ -34,17 +36,25 @@ def _record_to_dict(record: VideoEvalRecord) -> dict[str, Any]:
         "temporal_consistency": record.temporal_consistency,
         "psnr_mean": record.psnr_mean,
         "ssim_mean": record.ssim_mean,
+        "mean_mae": record.mean_mae,
+        "reference_temporal_consistency": record.reference_temporal_consistency,
+        "temporal_error_vs_reference": record.temporal_error_vs_reference,
     }
 
 
 def _summary_to_dict(summary: VideoEvalSummary) -> dict[str, Any]:
     return {
         "total_videos": summary.total_videos,
+        "total_frames_with_reference": summary.total_frames_with_reference,
         "mean_fid": summary.mean_fid,
+        "inception_feature_mean_l2": summary.inception_feature_mean_l2,
         "mean_lpips": summary.mean_lpips,
         "mean_temporal_consistency": summary.mean_temporal_consistency,
         "mean_psnr": summary.mean_psnr,
         "mean_ssim": summary.mean_ssim,
+        "mean_mae": summary.mean_mae,
+        "mean_reference_temporal_consistency": summary.mean_reference_temporal_consistency,
+        "mean_temporal_error_vs_reference": summary.mean_temporal_error_vs_reference,
         "fvd": summary.fvd,
     }
 
@@ -55,11 +65,17 @@ def build_evaluation_report(
     generation_manifest_path: str,
     output_report_path: str,
     split: Optional[SplitName] = None,
+    pooled_gen_features: Optional[np.ndarray] = None,
+    pooled_ref_features: Optional[np.ndarray] = None,
 ) -> VideoEvalReport:
     """Build a typed video generation evaluation report."""
-    summary = evaluate_records(records)
+    summary = evaluate_records(
+        records,
+        pooled_gen_features=pooled_gen_features,
+        pooled_ref_features=pooled_ref_features,
+    )
     return VideoEvalReport(
-        schema_version="v1_video_generation_evaluation",
+        schema_version="v2_video_generation_evaluation",
         evaluated_split=None if split is None else split.value,
         generation_manifest_path=generation_manifest_path,
         output_report_path=output_report_path,

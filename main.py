@@ -44,7 +44,7 @@ TRAIN_RATIO: float = 0.8
 VAL_RATIO: float = 0.1
 TEST_RATIO: float = 0.1
 
-DOWNLOAD_SHARDS: list[int] = [0]
+DOWNLOAD_SHARDS: list[int] = [0,1,2]
 DOWNLOAD_VIDEOS: bool = True
 MAX_CHUNKS_PER_SHARD: Optional[int] = 50
 
@@ -247,6 +247,7 @@ def run_pipeline() -> None:
             "chunk_id": chunk.chunk_id,
             "game": chunk.game,
             "prompt": prompt,
+            "source_video_path": chunk.video_path,
             "frames_dir": "",
             "num_frames": 0,
         }
@@ -272,7 +273,7 @@ def run_pipeline() -> None:
 
     # --- Stage 5: Evaluate ---
     logger.info("[5/5] Evaluation report...")
-    records = build_evaluation_records(
+    records, pooled_gen_f, pooled_ref_f = build_evaluation_records(
         generation_manifest_path=gen_manifest_path,
         reference_dataset_path=paths.nitrogen_data_dir,
     )
@@ -284,14 +285,20 @@ def run_pipeline() -> None:
             generation_manifest_path=str(gen_manifest_path),
             output_report_path=str(report_path),
             split=split,
+            pooled_gen_features=pooled_gen_f,
+            pooled_ref_features=pooled_ref_f,
         )
         write_evaluation_report(report)
         logger.info(
-            "Report: %s | videos=%d | temporal_consistency=%s | lpips=%s",
+            "Report: %s | videos=%d | temporal_consistency=%s | mae=%s | "
+            "lpips=%s | inception_l2=%s | fid=%s",
             report_path,
             report.summary.total_videos,
             report.summary.mean_temporal_consistency,
+            report.summary.mean_mae,
             report.summary.mean_lpips,
+            report.summary.inception_feature_mean_l2,
+            report.summary.mean_fid,
         )
     else:
         logger.warning("No evaluation records generated (no valid generated videos).")

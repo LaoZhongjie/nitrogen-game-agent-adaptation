@@ -9,7 +9,7 @@ from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from src.eval.metrics import VideoEvalRecord, evaluate_video_pair
+from src.eval.metrics import VideoEvalRecord, evaluate_video_pair, extract_inception_features
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,36 @@ def _load_frames_from_dir(frame_dir: Union[str, Path]) -> Optional[np.ndarray]:
 
     frames = [np.array(Image.open(f).convert("RGB")) for f in frame_files]
     return np.stack(frames)
+
+
+def _find_chunk_video_path(data_root: Path, chunk_id: str) -> Optional[str]:
+    """Locate ``video.mp4`` for a NitroGen ``chunk_id`` under ``SHARD_*/*/chunk_id/``."""
+    if not chunk_id.strip():
+        return None
+    for shard_dir in sorted(data_root.glob("SHARD_*")):
+        if not shard_dir.is_dir():
+            continue
+        for video_dir in shard_dir.iterdir():
+            if not video_dir.is_dir():
+                continue
+            candidate = video_dir / chunk_id / "video.mp4"
+            if candidate.is_file():
+                return str(candidate.resolve())
+    return None
+
+
+def _resolve_source_video_path(entry: dict, reference_dataset_path: Optional[Path]) -> str:
+    """Prefer manifest ``source_video_path``; else search ``reference_dataset_path`` by chunk id."""
+    raw = entry.get("source_video_path", "")
+    explicit = str(raw).strip() if raw is not None else ""
+    if explicit and Path(explicit).is_file():
+        return explicit
+
+    if reference_dataset_path is not None and entry.get("chunk_id"):
+        found = _find_chunk_video_path(reference_dataset_path, str(entry["chunk_id"]))
+        if found:
+            return found
+    return ""
 
 
 def _load_reference_frames(
@@ -98,15 +128,18 @@ def _load_reference_frames(
 def build_evaluation_records(
     generation_manifest_path: Union[str, Path],
     reference_dataset_path: Optional[Union[str, Path]] = None,
-) -> List[VideoEvalRecord]:
-    """Build evaluation records by comparing generated videos against references.
+) -> tuple[list[VideoEvalRecord], Optional[np.ndarray], Optional[np.ndarray]]:
+    """Build evaluation records and optional pooled Inception features for FID / mean L2.
 
-    If ``reference_dataset_path`` is provided, attempts to load original videos
-    from the NitroGen data directory for per-frame comparison. Otherwise, only
-    temporal consistency is computed.
+    Reference frames are loaded at the **same spatial resolution as generated PNGs** when
+    ``reference_dataset_path`` is set (explicit ``source_video_path`` or NitroGen layout lookup).
     """
     manifest = load_generation_manifest(generation_manifest_path)
     records: list[VideoEvalRecord] = []
+    ref_root = Path(reference_dataset_path) if reference_dataset_path else None
+
+    pooled_gen_feats: list[np.ndarray] = []
+    pooled_ref_feats: list[np.ndarray] = []
 
     for entry in manifest:
         chunk_id = str(entry.get("chunk_id", ""))
@@ -122,11 +155,12 @@ def build_evaluation_records(
             continue
 
         ref_frames = None
-        if reference_dataset_path:
-            video_path = entry.get("source_video_path", "")
+        if ref_root is not None and ref_root.is_dir():
+            video_path = _resolve_source_video_path(entry, ref_root)
             if video_path:
+                h, w = int(gen_frames.shape[1]), int(gen_frames.shape[2])
                 ref_frames = _load_reference_frames(
-                    video_path, num_frames=len(gen_frames)
+                    video_path, num_frames=len(gen_frames), resolution=(h, w)
                 )
 
         record = evaluate_video_pair(
@@ -137,4 +171,27 @@ def build_evaluation_records(
         )
         records.append(record)
 
-    return records
+        if ref_frames is not None and len(ref_frames) > 0:
+            n = min(len(gen_frames), len(ref_frames))
+            if n > 0:
+                gf = extract_inception_features(gen_frames[:n])
+                rf = extract_inception_features(ref_frames[:n])
+                if gf is not None and rf is not None and len(gf) == len(rf):
+                    pooled_gen_feats.append(gf)
+                    pooled_ref_feats.append(rf)
+
+    gen_stack = (
+        np.concatenate(pooled_gen_feats, axis=0) if pooled_gen_feats else None
+    )
+    ref_stack = (
+        np.concatenate(pooled_ref_feats, axis=0) if pooled_ref_feats else None
+    )
+
+    return records, gen_stack, ref_stack
+
+
+# Backward-compatible name: tuple return is the canonical API.
+__all__ = [
+    "build_evaluation_records",
+    "load_generation_manifest",
+]
