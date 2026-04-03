@@ -435,6 +435,14 @@ def run_hunyuanvideo_lora_finetune(config: VideoGenConfig) -> dict[str, Any]:
         json.dump(_config_to_dict(config), fp, indent=2)
         fp.write("\n")
 
+    # Auto-generate training plots
+    try:
+        from scripts.plot_training import generate_plots
+        plots_dir = generate_plots(output_dir)
+        logger.info("Training plots saved to %s", plots_dir)
+    except Exception as exc:
+        logger.warning("Could not generate training plots: %s", exc)
+
     logger.info(
         "Training complete: %d steps, %d epochs, %.0f seconds. Artifacts in %s",
         global_step, num_epochs, total_duration, output_dir,
