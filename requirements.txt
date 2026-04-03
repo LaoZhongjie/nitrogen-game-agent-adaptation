@@ -27,6 +27,7 @@ matplotlib>=3.8.0
 # Utilities
 huggingface-hub>=0.23.0
 tqdm>=4.66.0
+yt-dlp>=2024.8.0
 
 # Dev / Testing
 pytest>=8.0.0
