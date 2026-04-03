@@ -27,6 +27,8 @@ if __package__ in {None, ""}:
     repo_root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo_root))
 
+from src.data.mp4_validate import is_probably_valid_mp4
+
 
 def _download_shard_archive(
     dataset_id: str,
@@ -60,16 +62,36 @@ def _extract_shard(archive_path: Path, output_dir: Path) -> Path:
 
 
 def _download_video(url: str, output_path: Path, timeout: int = 120) -> bool:
-    """Download a video from ``url`` to ``output_path``. Returns success flag."""
-    import urllib.request
+    """Download a video from ``url`` to ``output_path``. Returns success flag.
+
+    Uses a browser-like User-Agent so CDNs are less likely to return HTML.
+    After download, validates MP4 structure; corrupt or non-MP4 files are removed.
+    """
     import urllib.error
+    import urllib.request
 
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(url, str(output_path))
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (compatible; NitroGenPipeline/1.0; "
+                    "+https://github.com/)"
+                ),
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+        output_path.write_bytes(data)
+        if not is_probably_valid_mp4(output_path):
+            output_path.unlink(missing_ok=True)
+            print(f"  [WARN] Download was not a valid MP4 (removed): {url[:80]}...")
+            return False
         return True
     except (urllib.error.URLError, OSError, ValueError) as exc:
         print(f"  [WARN] Failed to download {url}: {exc}")
+        output_path.unlink(missing_ok=True)
         return False
 
 
@@ -120,7 +142,10 @@ def _process_shard(
                 video_url = metadata.get("original_video", {}).get("url", "")
                 if video_url:
                     video_out = dest / "video.mp4"
-                    if not video_out.exists():
+                    need_fetch = not video_out.exists() or not is_probably_valid_mp4(video_out)
+                    if need_fetch:
+                        if video_out.exists():
+                            video_out.unlink(missing_ok=True)
                         ok = _download_video(video_url, video_out)
                         if ok:
                             stats["videos_downloaded"] += 1
