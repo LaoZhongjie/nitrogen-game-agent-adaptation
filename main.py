@@ -1,4 +1,4 @@
-"""Run the full pipeline: build manifest → fine-tune → predict → evaluate.
+"""Run the full pipeline: download data -> fine-tune -> generate -> evaluate.
 
 Edit the ``PipelinePaths`` values below, then from the repo root:
 
@@ -8,46 +8,46 @@ Edit the ``PipelinePaths`` values below, then from the repo root:
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-
-# ---------------------------------------------------------------------------
-# Edit paths and hyperparameters below for your data and hardware.
-# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
 class PipelinePaths:
     """Filesystem locations for one end-to-end run."""
 
-    raw_episodes_dir: Path
+    nitrogen_data_dir: Path
     manifest_path: Path
     run_output_dir: Path
     finetune_config_template: Path
 
 
 PATHS = PipelinePaths(
-    raw_episodes_dir=Path("data/raw"),
+    nitrogen_data_dir=Path("data/nitrogen"),
     manifest_path=Path("data/processed/manifest.json"),
     run_output_dir=Path("outputs/pipeline_run"),
     finetune_config_template=Path("configs/finetune.example.json"),
 )
 
-# Split used for inference and evaluation (must match manifest clip splits).
 EVAL_SPLIT: str = "val"
-
-# Manifest construction: sliding window and train/val/test episode ratios.
-DATASET_SEED: int = 0
-CLIP_LENGTH: int = 16
-STRIDE: int = 16
+DATASET_SEED: int = 42
 TRAIN_RATIO: float = 0.8
 VAL_RATIO: float = 0.1
 TEST_RATIO: float = 0.1
 
-# Inference batch size in frames.
-PREDICT_BATCH_SIZE: int = 8
+DOWNLOAD_SHARDS: list[int] = [0]
+DOWNLOAD_VIDEOS: bool = True
+MAX_CHUNKS_PER_SHARD: int | None = 50
+
+GENERATE_MAX_SAMPLES: int = 5
 
 
 def _repo_root() -> Path:
@@ -55,21 +55,20 @@ def _repo_root() -> Path:
 
 
 def run_pipeline() -> None:
-    """Execute build → train → predict → report."""
+    """Execute download -> build manifest -> fine-tune -> generate -> evaluate."""
     root = _repo_root()
     sys.path.insert(0, str(root))
 
     from scripts.build_dataset import BuildDatasetConfig, build_manifest
-    from scripts.finetune import load_finetune_config, run_finetune
-    from src.data.loader import ManifestDataset
+    from scripts.download_data import download_nitrogen
     from src.data.schema import SplitName, SplitPolicy
-    from src.eval.pipeline import build_evaluation_records_from_manifest_predictions, load_prediction_records
+    from src.eval.pipeline import build_evaluation_records
     from src.eval.report import build_evaluation_report, write_evaluation_report
-    from src.train.config_io import build_vocab_aligner_from_finetune_config, load_json_object
-    from src.train.hf_finetune import manifest_input_root, predict_clip_actions
+    from src.train.config_io import load_json_object, load_videogen_config
+    from src.train.hf_finetune import run_hunyuanvideo_lora_finetune
 
     paths = PipelinePaths(
-        raw_episodes_dir=(root / PATHS.raw_episodes_dir).resolve(),
+        nitrogen_data_dir=(root / PATHS.nitrogen_data_dir).resolve(),
         manifest_path=(root / PATHS.manifest_path).resolve(),
         run_output_dir=(root / PATHS.run_output_dir).resolve(),
         finetune_config_template=(root / PATHS.finetune_config_template).resolve(),
@@ -78,89 +77,148 @@ def run_pipeline() -> None:
     if not paths.finetune_config_template.is_file():
         raise FileNotFoundError(f"missing finetune template: {paths.finetune_config_template}")
 
-    # 1) Manifest
-    print("[1/4] Building dataset manifest...")
+    # --- Stage 1: Download NitroGen data ---
+    logger.info("[1/5] Downloading NitroGen data (shards=%s)...", DOWNLOAD_SHARDS)
+    paths.nitrogen_data_dir.mkdir(parents=True, exist_ok=True)
+    download_stats = download_nitrogen(
+        output_dir=paths.nitrogen_data_dir,
+        shard_indices=DOWNLOAD_SHARDS,
+        download_videos=DOWNLOAD_VIDEOS,
+        max_chunks_per_shard=MAX_CHUNKS_PER_SHARD,
+    )
+    logger.info("Download stats: %s", json.dumps(download_stats, indent=2))
+
+    # --- Stage 2: Build manifest ---
+    logger.info("[2/5] Building dataset manifest...")
     paths.manifest_path.parent.mkdir(parents=True, exist_ok=True)
     ds_cfg = BuildDatasetConfig(
-        input_root=str(paths.raw_episodes_dir),
+        input_root=str(paths.nitrogen_data_dir),
         output_manifest_path=str(paths.manifest_path),
         seed=DATASET_SEED,
         split_policy=SplitPolicy(train=TRAIN_RATIO, val=VAL_RATIO, test=TEST_RATIO),
-        clip_length=CLIP_LENGTH,
-        stride=STRIDE,
     )
     manifest_obj = build_manifest(ds_cfg)
     with paths.manifest_path.open("w", encoding="utf-8") as fp:
         json.dump(manifest_obj, fp, indent=2)
         fp.write("\n")
-    print(f"      Wrote {paths.manifest_path}")
+    logger.info("Manifest: %d chunks, splits=%s", manifest_obj["total_chunks"], manifest_obj["split_counts"])
 
-    # 2) Fine-tune (effective config lives under run dir)
-    print("[2/4] Fine-tuning...")
+    # --- Stage 3: Fine-tune HunyuanVideo with LoRA ---
+    logger.info("[3/5] Fine-tuning HunyuanVideo...")
     paths.run_output_dir.mkdir(parents=True, exist_ok=True)
+
     raw_ft = dict(load_json_object(paths.finetune_config_template))
-    raw_ft["manifest_path"] = str(paths.manifest_path)
+    raw_ft["dataset_path"] = str(paths.nitrogen_data_dir)
     raw_ft["output_dir"] = str(paths.run_output_dir)
+    raw_ft["split_seed"] = DATASET_SEED
+
     ft_cfg_path = paths.run_output_dir / "finetune_config.json"
     with ft_cfg_path.open("w", encoding="utf-8") as fp:
         json.dump(raw_ft, fp, indent=2)
         fp.write("\n")
 
-    cfg = load_finetune_config(ft_cfg_path)
-    train_summary = run_finetune(cfg, raw_ft)
-    print(json.dumps(train_summary, indent=2))
+    config = load_videogen_config(ft_cfg_path)
+    train_summary = run_hunyuanvideo_lora_finetune(config)
+    logger.info("Training summary: %s", json.dumps(train_summary, indent=2))
 
-    # 3) Predict on EVAL_SPLIT
-    print(f"[3/4] Predicting (split={EVAL_SPLIT})...")
+    # --- Stage 4: Generate videos ---
+    logger.info("[4/5] Generating videos (split=%s, max=%d)...", EVAL_SPLIT, GENERATE_MAX_SAMPLES)
+
+    from src.data.loader import NitroGenDataset, chunk_to_training_sample
+    from src.model.action_encoder import GamepadActionEncoder
+    from src.train.hf_finetune import generate_video
+
     split = SplitName(EVAL_SPLIT)
-    aligner = build_vocab_aligner_from_finetune_config(raw_ft)
-    samples = list(ManifestDataset(paths.manifest_path, split=split))
-    if len(samples) == 0:
-        raise ValueError(f"no clips for split={EVAL_SPLIT}; check manifest splits.")
-    input_root = manifest_input_root(paths.manifest_path)
-    preds = predict_clip_actions(
-        model_dir=paths.run_output_dir,
-        samples=samples,
-        input_root=input_root,
-        aligner=aligner,
-        batch_size=PREDICT_BATCH_SIZE,
-    )
-    predictions_path = paths.run_output_dir / f"predictions_{EVAL_SPLIT}.json"
-    with predictions_path.open("w", encoding="utf-8") as fp:
-        json.dump(preds, fp, indent=2)
-        fp.write("\n")
-    print(f"      Wrote {predictions_path} ({len(preds)} clips)")
+    encoder = GamepadActionEncoder()
 
-    # 4) Evaluate
-    print("[4/4] Evaluation report...")
-    predictions = load_prediction_records(predictions_path)
-    records = build_evaluation_records_from_manifest_predictions(
-        manifest_path=paths.manifest_path,
-        predictions=predictions,
+    eval_dataset = NitroGenDataset(
+        data_dir=paths.nitrogen_data_dir,
         split=split,
-        require_all_clips=True,
-        target_aligner=aligner,
+        split_policy=config.split_policy,
+        seed=config.split_seed,
+        max_chunks=GENERATE_MAX_SAMPLES,
     )
-    report_path = paths.run_output_dir / f"report_{EVAL_SPLIT}.json"
-    report = build_evaluation_report(
-        records=records,
-        input_records_path=str(predictions_path),
-        output_report_path=str(report_path),
-        split=split,
-    )
-    write_evaluation_report(report)
-    print(
-        json.dumps(
-            {
-                "output_report_path": str(report_path),
-                "action_accuracy": report.summary.action_accuracy,
-                "mean_temporal_consistency": report.summary.mean_temporal_consistency,
-                "total_clip_count": report.summary.total_clip_count,
-                "total_action_count": report.summary.total_action_count,
-            },
-            indent=2,
+
+    gen_output_dir = paths.run_output_dir / "generated_videos"
+    gen_output_dir.mkdir(parents=True, exist_ok=True)
+
+    gen_results: list[dict] = []
+    for chunk in eval_dataset:
+        sample = chunk_to_training_sample(
+            chunk=chunk,
+            target_resolution=config.resolution,
+            max_frames=config.num_frames,
+            prompt_template=config.prompt_template,
         )
+        if sample is None:
+            continue
+
+        prompt = encoder.encode_conditioning_prompt(
+            actions=sample.actions,
+            game_name=chunk.game,
+            base_prompt=sample.prompt,
+        )
+
+        frames = generate_video(
+            model_dir=paths.run_output_dir,
+            prompt=prompt,
+            num_frames=sample.num_frames,
+            resolution=config.resolution,
+            seed=config.seed,
+        )
+
+        gen_entry: dict = {
+            "chunk_id": chunk.chunk_id,
+            "game": chunk.game,
+            "prompt": prompt,
+            "frames_dir": "",
+            "num_frames": 0,
+        }
+
+        if frames is not None:
+            import numpy as np
+            from PIL import Image
+
+            frame_dir = gen_output_dir / chunk.chunk_id
+            frame_dir.mkdir(parents=True, exist_ok=True)
+            for i, frame in enumerate(frames):
+                Image.fromarray(frame.astype(np.uint8)).save(str(frame_dir / f"frame_{i:04d}.png"))
+            gen_entry["frames_dir"] = str(frame_dir)
+            gen_entry["num_frames"] = len(frames)
+
+        gen_results.append(gen_entry)
+
+    gen_manifest_path = paths.run_output_dir / "generation_manifest.json"
+    with gen_manifest_path.open("w", encoding="utf-8") as fp:
+        json.dump(gen_results, fp, indent=2)
+        fp.write("\n")
+    logger.info("Generated %d videos", len(gen_results))
+
+    # --- Stage 5: Evaluate ---
+    logger.info("[5/5] Evaluation report...")
+    records = build_evaluation_records(
+        generation_manifest_path=gen_manifest_path,
+        reference_dataset_path=paths.nitrogen_data_dir,
     )
+
+    if records:
+        report_path = paths.run_output_dir / f"report_{EVAL_SPLIT}.json"
+        report = build_evaluation_report(
+            records=records,
+            generation_manifest_path=str(gen_manifest_path),
+            output_report_path=str(report_path),
+            split=split,
+        )
+        write_evaluation_report(report)
+        logger.info(
+            "Report: %s | videos=%d | temporal_consistency=%s | lpips=%s",
+            report_path,
+            report.summary.total_videos,
+            report.summary.mean_temporal_consistency,
+            report.summary.mean_lpips,
+        )
+    else:
+        logger.warning("No evaluation records generated (no valid generated videos).")
 
 
 if __name__ == "__main__":
