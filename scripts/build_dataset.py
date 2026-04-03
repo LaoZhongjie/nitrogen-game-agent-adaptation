@@ -42,6 +42,7 @@ class BuildDatasetConfig:
     max_chunks: Optional[int] = None
     use_processed_actions: bool = True
     split_granularity: str = "video"
+    show_progress: bool = True
 
 
 def build_manifest(config: BuildDatasetConfig) -> dict[str, Any]:
@@ -66,7 +67,22 @@ def build_manifest(config: BuildDatasetConfig) -> dict[str, Any]:
     video_splits: dict[str, str] = {}
     games_seen: set[str] = set()
 
-    for chunk_dir in chunk_dirs:
+    to_iterate = chunk_dirs
+    if config.show_progress:
+        try:
+            from tqdm import tqdm
+
+            to_iterate = tqdm(
+                chunk_dirs,
+                desc="Build manifest",
+                unit="chunk",
+                total=len(chunk_dirs),
+                dynamic_ncols=True,
+            )
+        except ImportError:
+            pass
+
+    for chunk_dir in to_iterate:
         if config.max_chunks is not None and len(chunks) >= config.max_chunks:
             break
 
@@ -159,6 +175,7 @@ def main() -> None:
         game_filter=args.game_filter,
         max_chunks=args.max_chunks,
         split_granularity=str(args.split_granularity),
+        show_progress=True,
     )
     manifest = build_manifest(config)
 
