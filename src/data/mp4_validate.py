@@ -50,4 +50,21 @@ def is_probably_valid_mp4(path: Path, min_size_bytes: int = 1024) -> bool:
             suffix = fp.read(tail_len)
     except OSError:
         return False
-    return b"moov" in suffix
+    if b"moov" in suffix:
+        return True
+
+    # Cover bytes between first ``prefix_len`` and last ``tail_len`` (otherwise
+    # ``moov`` could sit only in the middle for some container sizes).
+    gap_start = prefix_len
+    gap_end = size - tail_len
+    if gap_end > gap_start:
+        try:
+            with path.open("rb") as fp:
+                fp.seek(gap_start)
+                middle = fp.read(gap_end - gap_start)
+        except OSError:
+            return False
+        if b"moov" in middle:
+            return True
+
+    return False
