@@ -50,6 +50,10 @@ MAX_CHUNKS_PER_SHARD: Optional[int] = 50
 
 GENERATE_MAX_SAMPLES: int = 5
 
+# When downloading few chunks from few videos, video-level splits can put all data in
+# one split (e.g. train=0). Use "chunk" so train/val/test are spread across chunks.
+DATASET_SPLIT_GRANULARITY: str = "chunk"
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent
@@ -97,6 +101,7 @@ def run_pipeline() -> None:
         output_manifest_path=str(paths.manifest_path),
         seed=DATASET_SEED,
         split_policy=SplitPolicy(train=TRAIN_RATIO, val=VAL_RATIO, test=TEST_RATIO),
+        split_granularity=DATASET_SPLIT_GRANULARITY,
     )
     manifest_obj = build_manifest(ds_cfg)
     with paths.manifest_path.open("w", encoding="utf-8") as fp:
@@ -112,6 +117,7 @@ def run_pipeline() -> None:
     raw_ft["dataset_path"] = str(paths.nitrogen_data_dir)
     raw_ft["output_dir"] = str(paths.run_output_dir)
     raw_ft["split_seed"] = DATASET_SEED
+    raw_ft["split_granularity"] = DATASET_SPLIT_GRANULARITY
 
     ft_cfg_path = paths.run_output_dir / "finetune_config.json"
     with ft_cfg_path.open("w", encoding="utf-8") as fp:
@@ -138,6 +144,7 @@ def run_pipeline() -> None:
         split_policy=config.split_policy,
         seed=config.split_seed,
         max_chunks=GENERATE_MAX_SAMPLES,
+        split_granularity=config.split_granularity,
     )
 
     gen_output_dir = paths.run_output_dir / "generated_videos"
