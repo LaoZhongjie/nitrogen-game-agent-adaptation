@@ -43,7 +43,7 @@ checkpoints/
 outputs/
 
 # Data artifacts (keep specs/config in git; ignore large generated data)
-data/
+/data/
 datasets/
 
 # OS / editor
