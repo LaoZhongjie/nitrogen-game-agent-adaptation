@@ -132,7 +132,10 @@ def load_video_chunk(
         return None
 
     video_path = chunk_dir / "video.mp4"
-    video_path_str = str(video_path) if video_path.exists() else ""
+    if not video_path.is_file():
+        return None
+
+    video_path_str = str(video_path)
 
     shard_name = chunk_dir.parent.parent.name if chunk_dir.parent.parent else "unknown"
 
