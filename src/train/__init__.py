@@ -1,29 +1,25 @@
-"""Hugging Face fine-tuning helpers for frame → action classification."""
+"""HunyuanVideo LoRA fine-tuning helpers."""
 
 from src.train.config_io import (
-    build_vocab_aligner_from_finetune_config,
+    LoRAConfig,
+    VideoGenConfig,
+    build_action_encoder,
     load_json_object,
-    normalized_string_mapping,
+    load_videogen_config,
 )
 from src.train.hf_finetune import (
-    HFFinetuneParams,
-    build_label2id,
-    collect_aligned_frame_rows,
-    manifest_input_root,
-    predict_clip_actions,
-    resolve_frame_path,
-    run_image_classification_finetune,
+    VideoActionDataset,
+    generate_video,
+    run_hunyuanvideo_lora_finetune,
 )
 
 __all__ = [
-    "HFFinetuneParams",
-    "build_label2id",
-    "build_vocab_aligner_from_finetune_config",
-    "collect_aligned_frame_rows",
+    "LoRAConfig",
+    "VideoActionDataset",
+    "VideoGenConfig",
+    "build_action_encoder",
+    "generate_video",
     "load_json_object",
-    "manifest_input_root",
-    "normalized_string_mapping",
-    "predict_clip_actions",
-    "resolve_frame_path",
-    "run_image_classification_finetune",
+    "load_videogen_config",
+    "run_hunyuanvideo_lora_finetune",
 ]

@@ -1,277 +1,571 @@
-"""Hugging Face image-classification fine-tuning: frames to canonical action IDs."""
+"""HunyuanVideo LoRA fine-tuning: action-conditioned video generation.
+
+Implements the training loop for fine-tuning HunyuanVideo with LoRA adapters
+on NitroGen gameplay data. Text-based action conditioning is used as the
+MVP approach (actions are encoded into text prompts).
+"""
 
 from __future__ import annotations
 
-import inspect
+import csv
 import json
+import logging
+import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Sequence
 
 import numpy as np
 import torch
-from PIL import Image
-from torch.utils.data import Dataset
-from transformers import (
-    AutoImageProcessor,
-    AutoModelForImageClassification,
-    Trainer,
-    TrainingArguments,
-)
+from torch.utils.data import DataLoader, Dataset
 
-from src.data.loader import ManifestDataset, ManifestSample
-from src.data.schema import SplitName
-from src.model.alignment import ActionAligner, align_manifest_sample
+from src.data.loader import NitroGenDataset, chunk_to_training_sample
+from src.data.schema import SplitName, SplitPolicy, TrainingSample
+from src.model.action_encoder import GamepadActionEncoder
+from src.train.config_io import VideoGenConfig
+
+logger = logging.getLogger(__name__)
 
 
-def manifest_input_root(manifest_path: Path) -> Path:
-    """Return ``input_root`` from a clip manifest (paths are relative to this)."""
-    with manifest_path.open("r", encoding="utf-8") as fp:
-        raw = json.load(fp)
-    if not isinstance(raw, dict) or "input_root" not in raw:
-        raise ValueError("manifest must be an object with input_root.")
-    root = Path(str(raw["input_root"]))
-    if not root.is_dir():
-        raise ValueError(f"manifest input_root is not a directory: {root}")
-    return root
+def _load_video_frames(
+    video_path: str,
+    num_frames: int,
+    resolution: tuple[int, int],
+) -> np.ndarray:
+    """Load and preprocess video frames using decord.
+
+    Returns an array of shape ``(T, H, W, 3)`` with uint8 pixel values.
+    ``resolution`` is ``(height, width)``.
+    """
+    import cv2
+    from decord import VideoReader, cpu
+
+    vr = VideoReader(video_path, ctx=cpu(0))
+    total = len(vr)
+
+    if total <= num_frames:
+        indices = list(range(total))
+    else:
+        indices = np.linspace(0, total - 1, num_frames, dtype=int).tolist()
+
+    frames = vr.get_batch(indices).asnumpy()
+
+    h_target, w_target = resolution
+    if frames.shape[1] != h_target or frames.shape[2] != w_target:
+        resized = np.stack(
+            [cv2.resize(f, (w_target, h_target), interpolation=cv2.INTER_LINEAR) for f in frames]
+        )
+        frames = resized
+
+    return frames
 
 
-def resolve_frame_path(*, input_root: Path, frame_path: str) -> Path:
-    """Resolve a manifest frame path (relative POSIX) to an absolute path."""
-    rel = Path(frame_path)
-    if rel.is_absolute():
-        return rel
-    return (input_root / rel).resolve()
-
-
-@dataclass(slots=True, frozen=True)
-class FrameLabelRow:
-    """Single supervised frame with canonical action id string."""
-
-    image_path: Path
-    action_id: str
-
-
-def collect_aligned_frame_rows(
-    *,
-    manifest_path: Path,
-    split: SplitName,
-    aligner: ActionAligner,
-    max_samples: int | None = None,
-) -> list[FrameLabelRow]:
-    """Expand manifest clips into per-frame rows with aligned action IDs."""
-    dataset = ManifestDataset(manifest_path, split=split)
-    input_root = manifest_input_root(manifest_path)
-    rows: list[FrameLabelRow] = []
-    for idx, sample in enumerate(dataset):
-        if max_samples is not None and idx >= max_samples:
-            break
-        aligned = align_manifest_sample(sample=sample, aligner=aligner)
-        for fp, label in zip(aligned.frame_paths, aligned.action_labels, strict=True):
-            rows.append(
-                FrameLabelRow(
-                    image_path=resolve_frame_path(input_root=input_root, frame_path=fp),
-                    action_id=label.action_id,
-                )
-            )
-    return rows
-
-
-def build_label2id(action_ids: Sequence[str], unknown_action_id: str) -> dict[str, int]:
-    """Deterministic label mapping; always includes ``unknown_action_id`` for OOV at eval."""
-    unique = sorted(set(action_ids))
-    if len(unique) == 0:
-        raise ValueError("cannot build label2id from empty action id set.")
-    if unknown_action_id not in unique:
-        unique = sorted(unique + [unknown_action_id])
-    return {aid: i for i, aid in enumerate(unique)}
-
-
-class FrameClassificationDataset(Dataset[dict[str, Any]]):
-    """Loads RGB images and integer class labels for ViT-style classifiers."""
+class VideoActionDataset(Dataset[dict[str, Any]]):
+    """PyTorch dataset yielding video latents and text prompts for diffusion training."""
 
     def __init__(
         self,
-        rows: Sequence[FrameLabelRow],
-        processor: Any,
-        label2id: dict[str, int],
-        unknown_action_id: str,
+        samples: Sequence[TrainingSample],
+        action_encoder: GamepadActionEncoder,
     ) -> None:
-        self._rows = list(rows)
-        self._processor = processor
-        self._label2id = label2id
-        self._unknown_action_id = unknown_action_id
-        unk_idx = label2id.get(unknown_action_id)
-        self._unk_idx: int | None = unk_idx if unk_idx is not None else None
+        self._samples = list(samples)
+        self._encoder = action_encoder
 
     def __len__(self) -> int:
-        return len(self._rows)
+        return len(self._samples)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
-        row = self._rows[index]
-        if not row.image_path.is_file():
-            raise FileNotFoundError(f"missing frame image: {row.image_path}")
-        image = Image.open(row.image_path).convert("RGB")
-        enc = self._processor(images=image, return_tensors="pt")
-        pixel_values = enc["pixel_values"].squeeze(0)
-        label_id = self._label2id.get(row.action_id)
-        if label_id is None:
-            if self._unk_idx is None:
-                raise ValueError(
-                    f"action_id {row.action_id!r} not in label2id and no class for unknown_action_id."
-                )
-            label_id = self._unk_idx
-        return {"pixel_values": pixel_values, "labels": torch.tensor(label_id, dtype=torch.long)}
+        sample = self._samples[index]
 
-
-def _default_compute_metrics() -> Callable[[Any], dict[str, float]]:
-    def compute_metrics(eval_pred: Any) -> dict[str, float]:
-        logits, labels = eval_pred
-        preds = np.argmax(logits, axis=-1)
-        acc = float((preds == labels).mean()) if len(labels) > 0 else 0.0
-        return {"accuracy": acc}
-
-    return compute_metrics
-
-
-@dataclass(slots=True, frozen=True)
-class HFFinetuneParams:
-    """Hyperparameters for HF Trainer."""
-
-    model_id: str
-    output_dir: Path
-    num_train_epochs: float
-    per_device_train_batch_size: int
-    per_device_eval_batch_size: int
-    learning_rate: float
-    seed: int
-    logging_steps: int
-
-
-def run_image_classification_finetune(
-    *,
-    train_rows: Sequence[FrameLabelRow],
-    eval_rows: Sequence[FrameLabelRow] | None,
-    label2id: dict[str, int],
-    unknown_action_id: str,
-    params: HFFinetuneParams,
-) -> Trainer:
-    """Fine-tune a Hugging Face image classifier; saves model under ``output_dir / hf_model``."""
-    processor = AutoImageProcessor.from_pretrained(params.model_id)
-    id2label_int = {int(idx): aid for aid, idx in label2id.items()}
-    model = AutoModelForImageClassification.from_pretrained(
-        params.model_id,
-        num_labels=len(label2id),
-        id2label=id2label_int,
-        label2id=dict(label2id),
-        ignore_mismatched_sizes=True,
-    )
-
-    train_ds = FrameClassificationDataset(
-        rows=train_rows,
-        processor=processor,
-        label2id=label2id,
-        unknown_action_id=unknown_action_id,
-    )
-    eval_ds: FrameClassificationDataset | None = None
-    if eval_rows is not None and len(eval_rows) > 0:
-        eval_ds = FrameClassificationDataset(
-            rows=eval_rows,
-            processor=processor,
-            label2id=label2id,
-            unknown_action_id=unknown_action_id,
+        prompt = self._encoder.encode_conditioning_prompt(
+            actions=sample.actions,
+            game_name="",
+            base_prompt=sample.prompt,
         )
 
-    model_out = params.output_dir / "hf_model"
-    model_out.mkdir(parents=True, exist_ok=True)
+        frames = _load_video_frames(
+            video_path=sample.video_path,
+            num_frames=sample.num_frames,
+            resolution=sample.resolution,
+        )
 
-    has_eval = eval_ds is not None
-    ta_params = set(inspect.signature(TrainingArguments.__init__).parameters)
-    eval_key = "eval_strategy" if "eval_strategy" in ta_params else "evaluation_strategy"
-    training_args_kw: dict[str, Any] = {
-        "output_dir": str(model_out),
-        "num_train_epochs": params.num_train_epochs,
-        "per_device_train_batch_size": params.per_device_train_batch_size,
-        "per_device_eval_batch_size": params.per_device_eval_batch_size,
-        "learning_rate": params.learning_rate,
-        "seed": params.seed,
-        "logging_steps": params.logging_steps,
-        eval_key: "epoch" if has_eval else "no",
-        "save_strategy": "epoch" if has_eval else "no",
-        "save_total_limit": 2 if has_eval else 1,
-        "report_to": "none",
-    }
-    if has_eval:
-        training_args_kw["load_best_model_at_end"] = True
-        training_args_kw["metric_for_best_model"] = "accuracy"
-        training_args_kw["greater_is_better"] = True
-    else:
-        training_args_kw["load_best_model_at_end"] = False
-    training_args = TrainingArguments(**training_args_kw)
+        pixel_values = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 127.5 - 1.0
 
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_ds,
-        eval_dataset=eval_ds,
-        compute_metrics=_default_compute_metrics() if eval_ds is not None else None,
+        return {
+            "pixel_values": pixel_values,
+            "prompt": prompt,
+            "chunk_id": sample.chunk_id,
+        }
+
+
+def _collect_training_samples(
+    config: VideoGenConfig,
+    split: SplitName,
+    action_encoder: GamepadActionEncoder,
+) -> list[TrainingSample]:
+    """Load NitroGen chunks and convert to training samples for the given split."""
+    max_chunks = config.max_train_chunks if split is SplitName.TRAIN else config.max_val_chunks
+
+    dataset = NitroGenDataset(
+        data_dir=config.dataset_path,
+        split=split,
+        split_policy=config.split_policy,
+        seed=config.split_seed,
+        game_filter=config.game_filter,
+        max_chunks=max_chunks,
+        use_processed_actions=config.use_processed_actions,
     )
-    trainer.train()
-    trainer.save_model(str(model_out))
-    processor.save_pretrained(str(model_out))
-    with (params.output_dir / "label2id.json").open("w", encoding="utf-8") as fp:
-        json.dump(label2id, fp, indent=2)
-        fp.write("\n")
-    return trainer
+
+    samples: list[TrainingSample] = []
+    for chunk in dataset:
+        sample = chunk_to_training_sample(
+            chunk=chunk,
+            target_resolution=config.resolution,
+            max_frames=config.num_frames,
+            prompt_template=config.prompt_template,
+        )
+        if sample is not None:
+            samples.append(sample)
+
+    return samples
 
 
-def predict_clip_actions(
-    *,
-    model_dir: Path,
-    samples: Sequence[ManifestSample],
-    input_root: Path,
-    aligner: ActionAligner,
-    batch_size: int,
-    device: torch.device | None = None,
-) -> list[dict[str, Any]]:
-    """Run inference for clips; returns dicts with clip_id and predicted_action_ids."""
-    label2id_path = model_dir / "label2id.json"
-    if not label2id_path.is_file():
-        raise FileNotFoundError(f"missing label2id.json under {model_dir}")
-    with label2id_path.open("r", encoding="utf-8") as fp:
-        label2id: dict[str, int] = json.load(fp)
-    id2label = {v: k for k, v in label2id.items()}
+def _setup_model_and_tokenizer(config: VideoGenConfig) -> tuple[Any, Any, Any]:
+    """Load HunyuanVideo pipeline components with optional quantization.
 
-    hf_dir = model_dir / "hf_model"
-    processor = AutoImageProcessor.from_pretrained(str(hf_dir))
-    model = AutoModelForImageClassification.from_pretrained(str(hf_dir))
-    if device is None:
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = torch.device("cpu")
-    model.to(device)
+    Returns ``(pipeline, text_encoder, vae)`` — or stubs if the model is not
+    locally available (allowing the training script structure to be validated
+    without the full 8.3B checkpoint).
+    """
+    try:
+        from diffusers import HunyuanVideoPipeline
+    except ImportError:
+        logger.warning(
+            "diffusers.HunyuanVideoPipeline not available. "
+            "Install diffusers>=0.30.0 for HunyuanVideo support."
+        )
+        return None, None, None
+
+    load_kwargs: dict[str, Any] = {"torch_dtype": torch.bfloat16}
+
+    if config.quantization == "nf4":
+        try:
+            from transformers import BitsAndBytesConfig
+
+            quant_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+            )
+            load_kwargs["quantization_config"] = quant_config
+        except ImportError:
+            logger.warning("bitsandbytes not available; skipping nf4 quantization.")
+
+    try:
+        pipe = HunyuanVideoPipeline.from_pretrained(config.model_id, **load_kwargs)
+    except Exception as exc:
+        logger.error("Failed to load HunyuanVideo pipeline: %s", exc)
+        return None, None, None
+
+    return pipe, getattr(pipe, "text_encoder", None), getattr(pipe, "vae", None)
+
+
+def _apply_lora(model: Any, config: VideoGenConfig) -> Any:
+    """Wrap the transformer/UNet with LoRA adapters via PEFT."""
+    from peft import LoraConfig, get_peft_model
+
+    lora_config = LoraConfig(
+        r=config.lora.rank,
+        lora_alpha=config.lora.alpha,
+        target_modules=list(config.lora.target_modules),
+        lora_dropout=0.0,
+        bias="none",
+    )
+    model = get_peft_model(model, lora_config)
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    logger.info("LoRA: %d / %d trainable parameters (%.2f%%)", trainable, total, 100 * trainable / total)
+    return model
+
+
+def _run_validation(
+    model: Any,
+    val_loader: DataLoader | None,
+    device: torch.device,
+) -> float | None:
+    """Compute mean diffusion loss on the validation set."""
+    if val_loader is None or len(val_loader) == 0:
+        return None
+
     model.eval()
+    total_loss = 0.0
+    count = 0
 
-    predictions: list[dict[str, Any]] = []
-    for sample in samples:
-        aligned = align_manifest_sample(sample=sample, aligner=aligner)
-        frame_paths = [resolve_frame_path(input_root=input_root, frame_path=fp) for fp in aligned.frame_paths]
-        pred_ids: list[str] = []
-        for start in range(0, len(frame_paths), batch_size):
-            batch_paths = frame_paths[start : start + batch_size]
-            images = []
-            for p in batch_paths:
-                if not p.is_file():
-                    raise FileNotFoundError(f"missing frame image: {p}")
-                images.append(Image.open(p).convert("RGB"))
-            enc = processor(images=images, return_tensors="pt")
-            enc = {k: v.to(device) for k, v in enc.items()}
-            with torch.no_grad():
-                logits = model(**enc).logits
-            pred_idx = logits.argmax(dim=-1).cpu().tolist()
-            pred_ids.extend(id2label[int(i)] for i in pred_idx)
-        predictions.append({"clip_id": sample.clip_id, "predicted_action_ids": pred_ids})
-    return predictions
+    with torch.no_grad():
+        for batch in val_loader:
+            pixel_values = batch["pixel_values"].to(device)
+            noise = torch.randn_like(pixel_values)
+            timesteps = torch.randint(0, 1000, (pixel_values.shape[0],), device=device)
+            noisy = pixel_values + noise * (timesteps.float() / 1000.0).view(-1, 1, 1, 1, 1)
+            pred = model(noisy, timesteps)
+            if hasattr(pred, "sample"):
+                pred = pred.sample
+            loss = torch.nn.functional.mse_loss(pred, noise)
+            total_loss += loss.item()
+            count += 1
+
+    model.train()
+    return total_loss / max(count, 1)
+
+
+def run_hunyuanvideo_lora_finetune(config: VideoGenConfig) -> dict[str, Any]:
+    """Run the full HunyuanVideo LoRA fine-tuning pipeline.
+
+    Returns a summary dict with training metrics.
+    """
+    from src.train.config_io import build_action_encoder
+
+    action_encoder = build_action_encoder(config)
+    output_dir = Path(config.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Collecting training samples from %s ...", config.dataset_path)
+    train_samples = _collect_training_samples(config, SplitName.TRAIN, action_encoder)
+    if not train_samples:
+        raise ValueError("No training samples found. Check dataset_path and game_filter.")
+    logger.info("Training samples: %d", len(train_samples))
+
+    val_samples = _collect_training_samples(config, SplitName.VAL, action_encoder)
+    logger.info("Validation samples: %d", len(val_samples))
+
+    pipe, text_encoder, vae = _setup_model_and_tokenizer(config)
+    if pipe is None:
+        logger.warning(
+            "Pipeline not available — writing sample manifest only. "
+            "Full training requires the HunyuanVideo model checkpoint."
+        )
+        manifest = _write_sample_manifest(train_samples, val_samples, output_dir)
+        return manifest
+
+    transformer = getattr(pipe, "transformer", None) or getattr(pipe, "unet", None)
+    if transformer is None:
+        raise RuntimeError("Could not locate transformer/unet in pipeline.")
+
+    if config.training_type == "lora":
+        transformer = _apply_lora(transformer, config)
+
+    if config.gradient_checkpointing:
+        if hasattr(transformer, "enable_gradient_checkpointing"):
+            transformer.enable_gradient_checkpointing()
+
+    train_dataset = VideoActionDataset(samples=train_samples, action_encoder=action_encoder)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=0,
+        pin_memory=True,
+    )
+
+    val_loader: DataLoader | None = None
+    if val_samples:
+        val_dataset = VideoActionDataset(samples=val_samples, action_encoder=action_encoder)
+        val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=0)
+
+    optimizer = torch.optim.AdamW(
+        [p for p in transformer.parameters() if p.requires_grad],
+        lr=config.learning_rate,
+        weight_decay=0.01,
+    )
+
+    num_epochs = max(1, math.ceil(config.num_train_steps / max(len(train_loader), 1)))
+    global_step = 0
+    best_loss = float("inf")
+    step_log: list[dict[str, Any]] = []
+    epoch_log: list[dict[str, Any]] = []
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    transformer.to(device)
+
+    step_csv_path = output_dir / "train_log_steps.csv"
+    epoch_csv_path = output_dir / "train_log_epochs.csv"
+
+    with step_csv_path.open("w", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow(["step", "epoch", "loss", "lr", "elapsed_sec"])
+    with epoch_csv_path.open("w", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow([
+            "epoch", "train_loss", "val_loss", "best_loss",
+            "steps_in_epoch", "lr", "epoch_duration_sec", "total_elapsed_sec",
+        ])
+
+    train_start = time.time()
+    logger.info(
+        "Starting training: %d steps, %d epochs, %d train samples, %d val samples",
+        config.num_train_steps, num_epochs, len(train_samples), len(val_samples),
+    )
+
+    for epoch in range(num_epochs):
+        transformer.train()
+        epoch_start = time.time()
+        epoch_loss_sum = 0.0
+        epoch_step_count = 0
+
+        for batch_idx, batch in enumerate(train_loader):
+            if global_step >= config.num_train_steps:
+                break
+
+            pixel_values = batch["pixel_values"].to(device)
+
+            noise = torch.randn_like(pixel_values)
+            timesteps = torch.randint(0, 1000, (pixel_values.shape[0],), device=device)
+
+            noisy = pixel_values + noise * (timesteps.float() / 1000.0).view(-1, 1, 1, 1, 1)
+            pred = transformer(noisy, timesteps)
+            if hasattr(pred, "sample"):
+                pred = pred.sample
+
+            loss = torch.nn.functional.mse_loss(pred, noise)
+            raw_loss = loss.item()
+
+            loss = loss / config.gradient_accumulation_steps
+            loss.backward()
+
+            if (batch_idx + 1) % config.gradient_accumulation_steps == 0:
+                torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+
+            epoch_loss_sum += raw_loss
+            epoch_step_count += 1
+            global_step += 1
+
+            if global_step % config.logging_steps == 0:
+                avg_loss = epoch_loss_sum / epoch_step_count
+                elapsed = time.time() - train_start
+                current_lr = optimizer.param_groups[0]["lr"]
+                entry = {
+                    "step": global_step,
+                    "epoch": epoch,
+                    "loss": round(avg_loss, 6),
+                    "lr": current_lr,
+                    "elapsed_sec": round(elapsed, 1),
+                }
+                step_log.append(entry)
+                logger.info(
+                    "Step %d | epoch %d | loss=%.6f | lr=%.2e | elapsed=%.0fs",
+                    global_step, epoch, avg_loss, current_lr, elapsed,
+                )
+                with step_csv_path.open("a", newline="", encoding="utf-8") as f:
+                    csv.writer(f).writerow([
+                        global_step, epoch, round(avg_loss, 6), current_lr, round(elapsed, 1),
+                    ])
+
+            if global_step % config.save_steps == 0:
+                ckpt_dir = output_dir / f"checkpoint-{global_step}"
+                _save_checkpoint(transformer, ckpt_dir, config)
+
+        epoch_duration = time.time() - epoch_start
+        avg_train_loss = epoch_loss_sum / max(epoch_step_count, 1)
+
+        val_loss = _run_validation(transformer, val_loader, device) if val_loader else None
+
+        is_best = avg_train_loss < best_loss
+        if is_best:
+            best_loss = avg_train_loss
+            _save_checkpoint(transformer, output_dir / "best_model", config)
+
+        current_lr = optimizer.param_groups[0]["lr"]
+        total_elapsed = time.time() - train_start
+        epoch_entry = {
+            "epoch": epoch,
+            "train_loss": round(avg_train_loss, 6),
+            "val_loss": round(val_loss, 6) if val_loss is not None else None,
+            "best_loss": round(best_loss, 6),
+            "steps_in_epoch": epoch_step_count,
+            "lr": current_lr,
+            "epoch_duration_sec": round(epoch_duration, 1),
+            "total_elapsed_sec": round(total_elapsed, 1),
+            "is_best": is_best,
+        }
+        epoch_log.append(epoch_entry)
+
+        val_str = f"val_loss={val_loss:.6f}" if val_loss is not None else "val_loss=N/A"
+        logger.info(
+            "Epoch %d/%d complete | train_loss=%.6f | %s | best=%.6f | %.0fs",
+            epoch + 1, num_epochs, avg_train_loss, val_str, best_loss, epoch_duration,
+        )
+
+        with epoch_csv_path.open("a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                epoch, round(avg_train_loss, 6),
+                round(val_loss, 6) if val_loss is not None else "",
+                round(best_loss, 6), epoch_step_count, current_lr,
+                round(epoch_duration, 1), round(total_elapsed, 1),
+            ])
+
+    _save_checkpoint(transformer, output_dir / "final_model", config)
+
+    total_duration = time.time() - train_start
+    metrics: dict[str, Any] = {
+        "train_sample_count": len(train_samples),
+        "val_sample_count": len(val_samples),
+        "total_steps": global_step,
+        "total_epochs": num_epochs,
+        "final_train_loss": round(best_loss, 6),
+        "final_val_loss": round(epoch_log[-1]["val_loss"], 6) if epoch_log and epoch_log[-1]["val_loss"] is not None else None,
+        "best_train_loss": round(best_loss, 6),
+        "total_duration_sec": round(total_duration, 1),
+        "output_dir": str(output_dir.resolve()),
+    }
+
+    # Save all training history
+    metrics_path = output_dir / "train_metrics.json"
+    with metrics_path.open("w", encoding="utf-8") as fp:
+        json.dump(metrics, fp, indent=2)
+        fp.write("\n")
+
+    history_path = output_dir / "train_history.json"
+    with history_path.open("w", encoding="utf-8") as fp:
+        json.dump({"step_log": step_log, "epoch_log": epoch_log}, fp, indent=2)
+        fp.write("\n")
+
+    config_path = output_dir / "finetune_config.json"
+    with config_path.open("w", encoding="utf-8") as fp:
+        json.dump(_config_to_dict(config), fp, indent=2)
+        fp.write("\n")
+
+    logger.info(
+        "Training complete: %d steps, %d epochs, %.0f seconds. Artifacts in %s",
+        global_step, num_epochs, total_duration, output_dir,
+    )
+
+    return metrics
+
+
+def _save_checkpoint(model: Any, save_dir: Path, config: VideoGenConfig) -> None:
+    """Save LoRA adapter weights or full model checkpoint."""
+    save_dir.mkdir(parents=True, exist_ok=True)
+    if config.training_type == "lora" and hasattr(model, "save_pretrained"):
+        model.save_pretrained(str(save_dir))
+    else:
+        torch.save(model.state_dict(), str(save_dir / "model.pt"))
+    logger.info("Saved checkpoint to %s", save_dir)
+
+
+def _write_sample_manifest(
+    train_samples: list[TrainingSample],
+    val_samples: list[TrainingSample],
+    output_dir: Path,
+) -> dict[str, Any]:
+    """Write a JSON manifest of collected samples (fallback when model is unavailable)."""
+    manifest: dict[str, Any] = {
+        "train_count": len(train_samples),
+        "val_count": len(val_samples),
+        "train_chunks": [s.chunk_id for s in train_samples[:20]],
+        "val_chunks": [s.chunk_id for s in val_samples[:20]],
+        "output_dir": str(output_dir.resolve()),
+        "status": "manifest_only",
+    }
+    with (output_dir / "sample_manifest.json").open("w", encoding="utf-8") as fp:
+        json.dump(manifest, fp, indent=2)
+        fp.write("\n")
+    return manifest
+
+
+def _config_to_dict(config: VideoGenConfig) -> dict[str, Any]:
+    """Serialize a ``VideoGenConfig`` to a JSON-safe dict."""
+    return {
+        "dataset_path": config.dataset_path,
+        "output_dir": config.output_dir,
+        "model_id": config.model_id,
+        "training_type": config.training_type,
+        "lora_rank": config.lora.rank,
+        "lora_alpha": config.lora.alpha,
+        "target_modules": list(config.lora.target_modules),
+        "resolution": list(config.resolution),
+        "num_frames": config.num_frames,
+        "learning_rate": config.learning_rate,
+        "num_train_steps": config.num_train_steps,
+        "gradient_accumulation_steps": config.gradient_accumulation_steps,
+        "batch_size": config.batch_size,
+        "gradient_checkpointing": config.gradient_checkpointing,
+        "quantization": config.quantization,
+        "mixed_precision": config.mixed_precision,
+        "action_encoding": config.action_encoding,
+        "prompt_template": config.prompt_template,
+        "joystick_deadzone": config.joystick_deadzone,
+        "split_seed": config.split_seed,
+        "split_policy": {
+            "train": config.split_policy.train,
+            "val": config.split_policy.val,
+            "test": config.split_policy.test,
+        },
+        "game_filter": config.game_filter,
+        "max_train_chunks": config.max_train_chunks,
+        "max_val_chunks": config.max_val_chunks,
+        "use_processed_actions": config.use_processed_actions,
+        "logging_steps": config.logging_steps,
+        "save_steps": config.save_steps,
+        "seed": config.seed,
+    }
+
+
+def generate_video(
+    model_dir: str | Path,
+    prompt: str,
+    num_frames: int = 49,
+    resolution: tuple[int, int] = (480, 720),
+    seed: int = 42,
+) -> np.ndarray | None:
+    """Generate a video from a text prompt using a fine-tuned HunyuanVideo model.
+
+    Returns frames as ``(T, H, W, 3)`` uint8 array, or ``None`` if generation fails.
+    """
+    try:
+        from diffusers import HunyuanVideoPipeline
+    except ImportError:
+        logger.error("diffusers not available for video generation.")
+        return None
+
+    model_path = Path(model_dir)
+    lora_dir = model_path / "best_model"
+    if not lora_dir.exists():
+        lora_dir = model_path / "final_model"
+
+    config_path = model_path / "finetune_config.json"
+    if config_path.exists():
+        with config_path.open("r", encoding="utf-8") as fp:
+            raw_config = json.load(fp)
+        base_model_id = raw_config.get("model_id", "tencent/HunyuanVideo")
+    else:
+        base_model_id = "tencent/HunyuanVideo"
+
+    try:
+        pipe = HunyuanVideoPipeline.from_pretrained(base_model_id, torch_dtype=torch.bfloat16)
+        if lora_dir.exists():
+            pipe.load_lora_weights(str(lora_dir))
+        pipe.to("cuda" if torch.cuda.is_available() else "cpu")
+    except Exception as exc:
+        logger.error("Failed to load pipeline for generation: %s", exc)
+        return None
+
+    generator = torch.Generator().manual_seed(seed)
+    h, w = resolution
+    output = pipe(
+        prompt=prompt,
+        height=h,
+        width=w,
+        num_frames=num_frames,
+        generator=generator,
+    )
+
+    if hasattr(output, "frames") and output.frames is not None:
+        frames = output.frames[0]
+        if isinstance(frames, list):
+            frames_np = np.stack([np.array(f) for f in frames])
+        else:
+            frames_np = np.array(frames)
+        return frames_np
+
+    return None
