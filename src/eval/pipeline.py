@@ -52,25 +52,47 @@ def _load_reference_frames(
     if not video_path or not Path(video_path).exists():
         return None
 
+    import cv2
+
     try:
         from decord import VideoReader, cpu
-        import cv2
 
         vr = VideoReader(video_path, ctx=cpu(0))
         total = len(vr)
         indices = np.linspace(0, total - 1, min(num_frames, total), dtype=int).tolist()
         frames = vr.get_batch(indices).asnumpy()
-
-        if resolution:
-            h, w = resolution
-            frames = np.stack([
-                cv2.resize(f, (w, h), interpolation=cv2.INTER_LINEAR) for f in frames
-            ])
-
-        return frames
-    except (ImportError, Exception) as exc:
+    except ImportError:
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                logger.warning("Could not open reference video %s", video_path)
+                return None
+            rgb: list[np.ndarray] = []
+            while True:
+                ret, bgr = cap.read()
+                if not ret:
+                    break
+                rgb.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+            cap.release()
+            if not rgb:
+                return None
+            total = len(rgb)
+            idxs = np.linspace(0, total - 1, min(num_frames, total), dtype=int).tolist()
+            frames = np.stack([rgb[i] for i in idxs])
+        except Exception as exc:
+            logger.warning("Could not load reference video %s (opencv fallback): %s", video_path, exc)
+            return None
+    except Exception as exc:
         logger.warning("Could not load reference video %s: %s", video_path, exc)
         return None
+
+    if resolution:
+        h, w = resolution
+        frames = np.stack([
+            cv2.resize(f, (w, h), interpolation=cv2.INTER_LINEAR) for f in frames
+        ])
+
+    return frames
 
 
 def build_evaluation_records(
