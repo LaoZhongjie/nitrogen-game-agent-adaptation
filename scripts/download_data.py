@@ -298,80 +298,124 @@ def _process_shard(
     download_videos: bool,
     max_chunks: Optional[int],
     game_filter: Optional[str],
+    show_progress: bool = True,
 ) -> dict[str, int]:
     """Walk a shard directory, copy annotations, optionally download videos."""
     stats = {"chunks_processed": 0, "chunks_skipped": 0, "videos_downloaded": 0, "videos_failed": 0}
 
+    pbar = None
+    if show_progress:
+        try:
+            from tqdm import tqdm
+
+            pbar = tqdm(
+                desc=f"Chunks {shard_dir.name}",
+                unit="chunk",
+                dynamic_ncols=True,
+                miniters=1,
+            )
+        except ImportError:
+            pass
+
     video_dirs = sorted([p for p in shard_dir.iterdir() if p.is_dir()])
-    for video_dir in video_dirs:
-        chunk_dirs = sorted([p for p in video_dir.iterdir() if p.is_dir()])
-        for chunk_dir in chunk_dirs:
-            if max_chunks is not None and stats["chunks_processed"] >= max_chunks:
-                return stats
+    try:
+        for video_dir in video_dirs:
+            chunk_dirs = sorted([p for p in video_dir.iterdir() if p.is_dir()])
+            for chunk_dir in chunk_dirs:
+                if max_chunks is not None and stats["chunks_processed"] >= max_chunks:
+                    return stats
 
-            meta_path = chunk_dir / "metadata.json"
-            if not meta_path.exists():
-                stats["chunks_skipped"] += 1
-                continue
+                meta_path = chunk_dir / "metadata.json"
+                if not meta_path.exists():
+                    stats["chunks_skipped"] += 1
+                    if pbar is not None:
+                        pbar.update(1)
+                    continue
 
-            with meta_path.open("r", encoding="utf-8") as fp:
-                metadata = json.load(fp)
+                with meta_path.open("r", encoding="utf-8") as fp:
+                    metadata = json.load(fp)
 
-            if game_filter and metadata.get("game", "").lower() != game_filter.lower():
-                stats["chunks_skipped"] += 1
-                continue
+                if game_filter and metadata.get("game", "").lower() != game_filter.lower():
+                    stats["chunks_skipped"] += 1
+                    if pbar is not None:
+                        pbar.update(1)
+                    continue
 
-            chunk_id = chunk_dir.name
-            video_id = video_dir.name
-            dest = output_dir / shard_dir.name / video_id / chunk_id
-            dest.mkdir(parents=True, exist_ok=True)
+                chunk_id = chunk_dir.name
+                video_id = video_dir.name
+                dest = output_dir / shard_dir.name / video_id / chunk_id
+                dest.mkdir(parents=True, exist_ok=True)
 
-            for parquet_name in ("actions_raw.parquet", "actions_processed.parquet"):
-                src_parquet = chunk_dir / parquet_name
-                if src_parquet.exists():
-                    import shutil
-                    shutil.copy2(str(src_parquet), str(dest / parquet_name))
+                for parquet_name in ("actions_raw.parquet", "actions_processed.parquet"):
+                    src_parquet = chunk_dir / parquet_name
+                    if src_parquet.exists():
+                        import shutil
+                        shutil.copy2(str(src_parquet), str(dest / parquet_name))
 
-            with (dest / "metadata.json").open("w", encoding="utf-8") as fp:
-                json.dump(metadata, fp, indent=2)
+                with (dest / "metadata.json").open("w", encoding="utf-8") as fp:
+                    json.dump(metadata, fp, indent=2)
 
-            if download_videos:
-                orig = metadata.get("original_video", {}) or {}
-                video_url = str(orig.get("url", "") or "")
-                if video_url:
-                    video_out = dest / "video.mp4"
-                    need_fetch = not video_out.exists() or not is_probably_valid_mp4(video_out)
-                    if need_fetch:
-                        if video_out.exists():
-                            video_out.unlink(missing_ok=True)
-                        t0 = _safe_metadata_float(orig.get("start_time"))
-                        t1 = _safe_metadata_float(orig.get("end_time"))
-                        span = _segment_range_seconds(t0, t1)
-                        if span:
-                            print(
-                                f"  [video] {video_id}/{chunk_id}  "
-                                f"segment {span[0]:.2f}s–{span[1]:.2f}s",
-                                flush=True,
+                if download_videos:
+                    orig = metadata.get("original_video", {}) or {}
+                    video_url = str(orig.get("url", "") or "")
+                    if video_url:
+                        video_out = dest / "video.mp4"
+                        need_fetch = not video_out.exists() or not is_probably_valid_mp4(video_out)
+                        if need_fetch:
+                            if video_out.exists():
+                                video_out.unlink(missing_ok=True)
+                            t0 = _safe_metadata_float(orig.get("start_time"))
+                            t1 = _safe_metadata_float(orig.get("end_time"))
+                            span = _segment_range_seconds(t0, t1)
+                            if pbar is not None:
+                                pbar.set_postfix(
+                                    ok=stats["chunks_processed"],
+                                    vid_ok=stats["videos_downloaded"],
+                                    vid_fail=stats["videos_failed"],
+                                    fetching=chunk_id[:16],
+                                    sec=(
+                                        f"{span[0]:.0f}-{span[1]:.0f}"
+                                        if span
+                                        else "full"
+                                    ),
+                                    refresh=True,
+                                )
+                            if span:
+                                print(
+                                    f"  [video] {video_id}/{chunk_id}  "
+                                    f"segment {span[0]:.2f}s–{span[1]:.2f}s",
+                                    flush=True,
+                                )
+                            else:
+                                print(
+                                    f"  [video] {video_id}/{chunk_id}  full source (no valid time window)",
+                                    flush=True,
+                                )
+                            ok = _download_video(
+                                video_url,
+                                video_out,
+                                segment_start=t0,
+                                segment_end=t1,
                             )
+                            if ok:
+                                stats["videos_downloaded"] += 1
+                            else:
+                                stats["videos_failed"] += 1
                         else:
-                            print(
-                                f"  [video] {video_id}/{chunk_id}  full source (no valid time window)",
-                                flush=True,
-                            )
-                        ok = _download_video(
-                            video_url,
-                            video_out,
-                            segment_start=t0,
-                            segment_end=t1,
-                        )
-                        if ok:
                             stats["videos_downloaded"] += 1
-                        else:
-                            stats["videos_failed"] += 1
-                    else:
-                        stats["videos_downloaded"] += 1
 
-            stats["chunks_processed"] += 1
+                stats["chunks_processed"] += 1
+                if pbar is not None:
+                    pbar.set_postfix(
+                        ok=stats["chunks_processed"],
+                        vid_ok=stats["videos_downloaded"],
+                        vid_fail=stats["videos_failed"],
+                        refresh=False,
+                    )
+                    pbar.update(1)
+    finally:
+        if pbar is not None:
+            pbar.close()
 
     return stats
 
@@ -383,6 +427,7 @@ def download_nitrogen(
     max_chunks_per_shard: Optional[int] = None,
     game_filter: Optional[str] = None,
     dataset_id: str = "nvidia/NitroGen",
+    show_progress: bool = True,
 ) -> dict[str, int]:
     """Download and prepare NitroGen shards.
 
@@ -426,6 +471,7 @@ def download_nitrogen(
                 download_videos=download_videos,
                 max_chunks=max_chunks_per_shard,
                 game_filter=game_filter,
+                show_progress=show_progress,
             )
 
         totals["shards"] += 1
