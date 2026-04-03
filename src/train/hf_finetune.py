@@ -131,27 +131,47 @@ class VideoActionDataset(Dataset[dict[str, Any]]):
         return len(self._samples)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
-        sample = self._samples[index]
+        """Load one training item; skip corrupt / incomplete ``video.mp4`` (try other chunks)."""
+        n = len(self._samples)
+        if n == 0:
+            raise RuntimeError("VideoActionDataset has no samples.")
 
-        prompt = self._encoder.encode_conditioning_prompt(
-            actions=sample.actions,
-            game_name="",
-            base_prompt=sample.prompt,
+        last_exc: BaseException | None = None
+        for offset in range(n):
+            i = (index + offset) % n
+            sample = self._samples[i]
+            try:
+                prompt = self._encoder.encode_conditioning_prompt(
+                    actions=sample.actions,
+                    game_name="",
+                    base_prompt=sample.prompt,
+                )
+                frames = _load_video_frames(
+                    video_path=sample.video_path,
+                    num_frames=sample.num_frames,
+                    resolution=sample.resolution,
+                )
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "Unreadable video (using another chunk for this step) chunk=%s path=%s: %s",
+                    sample.chunk_id,
+                    sample.video_path,
+                    exc,
+                )
+                continue
+
+            pixel_values = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 127.5 - 1.0
+            return {
+                "pixel_values": pixel_values,
+                "prompt": prompt,
+                "chunk_id": sample.chunk_id,
+            }
+
+        raise RuntimeError(
+            f"No readable video after cycling all {n} samples (start index {index}). "
+            f"Delete bad mp4 files and re-download, or run download with videos again. Last error: {last_exc}"
         )
-
-        frames = _load_video_frames(
-            video_path=sample.video_path,
-            num_frames=sample.num_frames,
-            resolution=sample.resolution,
-        )
-
-        pixel_values = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 127.5 - 1.0
-
-        return {
-            "pixel_values": pixel_values,
-            "prompt": prompt,
-            "chunk_id": sample.chunk_id,
-        }
 
 
 def _collect_training_samples(
