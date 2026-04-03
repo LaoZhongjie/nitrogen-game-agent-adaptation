@@ -24,6 +24,7 @@
   "joystick_deadzone": 0.2,
 
   "split_seed": 42,
+  "split_granularity": "video",
   "split_policy": {
     "train": 0.8,
     "val": 0.1,
