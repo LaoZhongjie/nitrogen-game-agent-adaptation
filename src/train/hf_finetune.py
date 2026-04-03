@@ -7,6 +7,7 @@ MVP approach (actions are encoded into text prompts).
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import json
 import logging
@@ -14,6 +15,7 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Iterator
 from typing import Any, Optional, Sequence, Union
 
 import numpy as np
@@ -21,7 +23,6 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from src.data.loader import NitroGenDataset, chunk_to_training_sample
-from src.data.mp4_validate import is_probably_valid_mp4
 from src.data.schema import SplitName, SplitPolicy, TrainingSample
 from src.model.action_encoder import GamepadActionEncoder
 from src.train.config_io import VideoGenConfig
@@ -29,6 +30,23 @@ from src.train.config_io import VideoGenConfig
 logger = logging.getLogger(__name__)
 
 _decord_missing_logged = False
+
+
+@contextlib.contextmanager
+def _mixed_precision_autocast(device: torch.device, mixed_precision: str) -> Iterator[None]:
+    """CUDA autocast for bf16/fp16 training; no-op on CPU or unsupported modes."""
+    if device.type != "cuda":
+        yield
+        return
+    mp = (mixed_precision or "bf16").strip().lower()
+    if mp == "bf16" and torch.cuda.is_bf16_supported():
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            yield
+    elif mp == "fp16":
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            yield
+    else:
+        yield
 
 
 def _load_video_frames_decord(
@@ -195,20 +213,24 @@ def _collect_training_samples(
     )
 
     samples: list[TrainingSample] = []
-    skipped_invalid = 0
-    for chunk in dataset:
+    skipped_no_file = 0
+    try:
+        from tqdm import tqdm
+
+        chunk_iter = tqdm(
+            dataset,
+            desc=f"Collect samples ({split.value})",
+            unit="chunk",
+            total=len(dataset),
+            dynamic_ncols=True,
+        )
+    except ImportError:
+        chunk_iter = dataset
+
+    for chunk in chunk_iter:
         vp = Path(chunk.video_path) if chunk.video_path else None
         if vp is None or not vp.is_file():
-            skipped_invalid += 1
-            continue
-        if not is_probably_valid_mp4(vp):
-            logger.warning(
-                "Skipping chunk (invalid or incomplete MP4 — re-run download with "
-                "--download-videos): chunk=%s path=%s",
-                chunk.chunk_id,
-                vp,
-            )
-            skipped_invalid += 1
+            skipped_no_file += 1
             continue
         sample = chunk_to_training_sample(
             chunk=chunk,
@@ -219,8 +241,8 @@ def _collect_training_samples(
         if sample is not None:
             samples.append(sample)
 
-    if skipped_invalid:
-        logger.info("Skipped %d chunks with missing or invalid video.mp4", skipped_invalid)
+    if skipped_no_file:
+        logger.info("Skipped %d chunks with missing video.mp4", skipped_no_file)
 
     return samples
 
@@ -303,6 +325,119 @@ def _setup_model_and_tokenizer(config: VideoGenConfig) -> tuple[Any, Any, Any]:
     return pipe, getattr(pipe, "text_encoder", None), getattr(pipe, "vae", None)
 
 
+def _random_flowmatch_timesteps_for_training(
+    scheduler: Any,
+    batch_size: int,
+    device: torch.device,
+    model_dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sample timesteps for flow-matching training.
+
+    ``FlowMatchEulerDiscreteScheduler.index_for_timestep`` uses exact equality against
+    ``scheduler.timesteps`` (float32). Casting sampled timesteps to bf16/fp16 first breaks
+    that match and yields an empty index tensor.
+
+    Returns
+    -------
+    t_sched
+        ``float32`` on ``device`` — use with ``scheduler.scale_noise``.
+    t_model
+        Same values in ``model_dtype`` — use with ``HunyuanVideoTransformer3DModel``.
+    """
+    n = int(scheduler.config.num_train_timesteps)
+    idx = torch.randint(0, n, (batch_size,))
+    t_cpu = scheduler.timesteps[idx]
+    t_sched = t_cpu.to(device=device, dtype=torch.float32)
+    t_model = t_sched.to(dtype=model_dtype)
+    return t_sched, t_model
+
+
+def _hunyuan_transformer_forward(
+    transformer: Any,
+    hidden_states: torch.Tensor,
+    timestep: torch.Tensor,
+    encoder_hidden_states: torch.Tensor,
+    encoder_attention_mask: torch.Tensor,
+    pooled_projections: torch.Tensor,
+    guidance: torch.Tensor,
+) -> torch.Tensor:
+    """Call ``HunyuanVideoTransformer3DModel`` with required conditioning (matches pipeline)."""
+    ctx = (
+        transformer.cache_context("cond")
+        if hasattr(transformer, "cache_context")
+        else contextlib.nullcontext()
+    )
+    with ctx:
+        out = transformer(
+            hidden_states=hidden_states,
+            timestep=timestep,
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_attention_mask=encoder_attention_mask,
+            pooled_projections=pooled_projections,
+            guidance=guidance,
+            attention_kwargs=None,
+            return_dict=False,
+        )[0]
+    return out
+
+
+def _encode_hunyuan_latents(vae: Any, pixel_values: torch.Tensor, out_dtype: torch.dtype) -> torch.Tensor:
+    """Encode ``(B, T, C, H, W)`` pixels to transformer latent space (scaled).
+
+    Call inside ``torch.no_grad()`` and (on CUDA) inside ``_mixed_precision_autocast`` so VAE runs in bf16/fp16.
+    """
+    # VAE expects (B, C, T, H, W)
+    x = pixel_values.permute(0, 2, 1, 3, 4).to(device=vae.device, dtype=vae.dtype)
+    with torch.no_grad():
+        posterior = vae.encode(x).latent_dist
+        latents = posterior.mode()
+    latents = latents * vae.config.scaling_factor
+    return latents.to(dtype=out_dtype)
+
+
+def _encode_hunyuan_prompts(
+    pipe: Any,
+    prompts: list[str],
+    device: torch.device,
+    dtype: torch.dtype,
+    max_sequence_length: int,
+    clip_pooler_prompt: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return ``(encoder_hidden_states, encoder_attention_mask, pooled_projections)``.
+
+    Full action text goes to the Llama encoder only. CLIP (``text_encoder_2``) is capped at
+    77 tokens, so we pass a short fixed ``prompt_2`` for pooled projections only.
+    """
+    n = len(prompts)
+    prompt_2 = [clip_pooler_prompt] * n
+    prompt_embeds, pooled_prompt_embeds, prompt_attention_mask = pipe.encode_prompt(
+        prompt=prompts,
+        prompt_2=prompt_2,
+        device=device,
+        dtype=dtype,
+        max_sequence_length=max_sequence_length,
+    )
+    return prompt_embeds, prompt_attention_mask, pooled_prompt_embeds
+
+
+def _maybe_enable_vae_memory_saving(vae: Any, enabled: bool, device: torch.device) -> None:
+    """Turn on VAE slicing/tiling to lower peak VRAM during ``encode`` (small speed cost)."""
+    if not enabled or device.type != "cuda":
+        return
+    if hasattr(vae, "enable_slicing"):
+        try:
+            vae.enable_slicing()
+            logger.info("VAE slicing enabled (lower peak VRAM during encode).")
+        except Exception as exc:
+            logger.warning("VAE enable_slicing failed: %s", exc)
+    if hasattr(vae, "enable_tiling"):
+        try:
+            vae.enable_tiling()
+            logger.info("VAE tiling enabled (lower peak VRAM during encode).")
+        except Exception as exc:
+            logger.warning("VAE enable_tiling failed: %s", exc)
+
+
 def _apply_lora(model: Any, config: VideoGenConfig) -> Any:
     """Wrap the transformer/UNet with LoRA adapters via PEFT."""
     from peft import LoraConfig, get_peft_model
@@ -322,32 +457,66 @@ def _apply_lora(model: Any, config: VideoGenConfig) -> Any:
 
 
 def _run_validation(
-    model: Any,
+    transformer: Any,
+    pipe: Any,
     val_loader: Optional[DataLoader],
     device: torch.device,
+    mixed_precision: str,
+    llama_max_sequence_length: int,
+    clip_pooler_prompt: str,
 ) -> Optional[float]:
-    """Compute mean diffusion loss on the validation set."""
+    """Compute mean flow-matching loss on latents (same objective as training)."""
     if val_loader is None or len(val_loader) == 0:
         return None
 
-    model.eval()
+    transformer.eval()
+    scheduler = pipe.scheduler
+    vae = pipe.vae
+    guidance_scale = 6.0
+    t_dtype = transformer.dtype
     total_loss = 0.0
     count = 0
 
     with torch.no_grad():
         for batch in val_loader:
+            prompts = batch["prompt"]
+            if isinstance(prompts, str):
+                prompts = [prompts]
             pixel_values = batch["pixel_values"].to(device)
-            noise = torch.randn_like(pixel_values)
-            timesteps = torch.randint(0, 1000, (pixel_values.shape[0],), device=device)
-            noisy = pixel_values + noise * (timesteps.float() / 1000.0).view(-1, 1, 1, 1, 1)
-            pred = model(noisy, timesteps)
-            if hasattr(pred, "sample"):
-                pred = pred.sample
-            loss = torch.nn.functional.mse_loss(pred, noise)
+            with _mixed_precision_autocast(device, mixed_precision):
+                latents = _encode_hunyuan_latents(vae, pixel_values, t_dtype)
+                b = latents.shape[0]
+                noise = torch.randn_like(latents)
+                t_sched, t_model = _random_flowmatch_timesteps_for_training(
+                    scheduler, b, device, t_dtype
+                )
+                noisy = scheduler.scale_noise(latents, t_sched, noise)
+                target = noise - latents
+
+                pe, pam, pp = _encode_hunyuan_prompts(
+                    pipe,
+                    list(prompts),
+                    device,
+                    t_dtype,
+                    llama_max_sequence_length,
+                    clip_pooler_prompt,
+                )
+                guidance = torch.full((b,), guidance_scale * 1000.0, device=device, dtype=t_dtype)
+
+                pred = _hunyuan_transformer_forward(
+                    transformer,
+                    noisy,
+                    t_model,
+                    pe,
+                    pam,
+                    pp,
+                    guidance,
+                )
+                loss = torch.nn.functional.mse_loss(pred, target)
             total_loss += loss.item()
             count += 1
 
-    model.train()
+    transformer.train()
     return total_loss / max(count, 1)
 
 
@@ -392,23 +561,29 @@ def run_hunyuanvideo_lora_finetune(config: VideoGenConfig) -> dict[str, Any]:
     if config.training_type == "lora":
         transformer = _apply_lora(transformer, config)
 
-    if config.gradient_checkpointing:
-        if hasattr(transformer, "enable_gradient_checkpointing"):
-            transformer.enable_gradient_checkpointing()
+    train_bs = max(1, int(config.batch_size))
+    if train_bs > 1:
+        logger.warning(
+            "batch_size=%d > 1 often OOMs on HunyuanVideo; forcing batch_size=1 (use gradient_accumulation_steps).",
+            train_bs,
+        )
+        train_bs = 1
 
     train_dataset = VideoActionDataset(samples=train_samples, action_encoder=action_encoder)
     train_loader = DataLoader(
         train_dataset,
-        batch_size=config.batch_size,
+        batch_size=train_bs,
         shuffle=True,
         num_workers=0,
-        pin_memory=True,
+        pin_memory=torch.cuda.is_available(),
     )
 
     val_loader: Optional[DataLoader] = None
     if val_samples:
         val_dataset = VideoActionDataset(samples=val_samples, action_encoder=action_encoder)
-        val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=0)
+        val_loader = DataLoader(
+            val_dataset, batch_size=train_bs, shuffle=False, num_workers=0, pin_memory=torch.cuda.is_available()
+        )
 
     optimizer = torch.optim.AdamW(
         [p for p in transformer.parameters() if p.requires_grad],
@@ -423,7 +598,42 @@ def run_hunyuanvideo_lora_finetune(config: VideoGenConfig) -> dict[str, Any]:
     epoch_log: list[dict[str, Any]] = []
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    transformer.to(device)
+    pipe.to(device)
+    for module in (
+        pipe.vae,
+        getattr(pipe, "text_encoder", None),
+        getattr(pipe, "text_encoder_2", None),
+    ):
+        if module is not None:
+            module.eval()
+            for p in module.parameters():
+                p.requires_grad = False
+
+    _maybe_enable_vae_memory_saving(pipe.vae, config.vae_memory_saving, device)
+
+    scheduler = pipe.scheduler
+    guidance_scale = 6.0
+    t_dtype = transformer.dtype
+
+    if hasattr(transformer, "enable_gradient_checkpointing"):
+        if config.gradient_checkpointing or device.type == "cuda":
+            transformer.enable_gradient_checkpointing()
+            if device.type == "cuda" and not config.gradient_checkpointing:
+                logger.info(
+                    "Gradient checkpointing enabled on CUDA to reduce VRAM (config had gradient_checkpointing=false).",
+                )
+
+    logger.info(
+        "Training memory: resolution=%s num_frames=%d batch_size=%d mixed_precision=%s "
+        "llama_max_seq=%d vae_mem_save=%s | "
+        "Optional: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
+        config.resolution,
+        config.num_frames,
+        train_bs,
+        config.mixed_precision,
+        config.llama_max_sequence_length,
+        config.vae_memory_saving,
+    )
 
     step_csv_path = output_dir / "train_log_steps.csv"
     epoch_csv_path = output_dir / "train_log_epochs.csv"
@@ -442,104 +652,167 @@ def run_hunyuanvideo_lora_finetune(config: VideoGenConfig) -> dict[str, Any]:
         config.num_train_steps, num_epochs, len(train_samples), len(val_samples),
     )
 
-    for epoch in range(num_epochs):
-        transformer.train()
-        epoch_start = time.time()
-        epoch_loss_sum = 0.0
-        epoch_step_count = 0
+    train_pbar: Any = None
+    if config.show_training_progress:
+        try:
+            from tqdm import tqdm
 
-        for batch_idx, batch in enumerate(train_loader):
+            train_pbar = tqdm(
+                total=config.num_train_steps,
+                desc="Fine-tune",
+                unit="step",
+                dynamic_ncols=True,
+                mininterval=0.5,
+            )
+        except ImportError:
+            train_pbar = None
+
+    try:
+        for epoch in range(num_epochs):
+            transformer.train()
+            epoch_start = time.time()
+            epoch_loss_sum = 0.0
+            epoch_step_count = 0
+
+            for batch_idx, batch in enumerate(train_loader):
+                if global_step >= config.num_train_steps:
+                    break
+
+                prompts = batch["prompt"]
+                if isinstance(prompts, str):
+                    prompts = [prompts]
+                pixel_values = batch["pixel_values"].to(device)
+
+                with _mixed_precision_autocast(device, config.mixed_precision):
+                    latents = _encode_hunyuan_latents(pipe.vae, pixel_values, t_dtype)
+                    b = latents.shape[0]
+                    noise = torch.randn_like(latents)
+                    t_sched, t_model = _random_flowmatch_timesteps_for_training(
+                        scheduler, b, device, t_dtype
+                    )
+                    noisy = scheduler.scale_noise(latents, t_sched, noise)
+                    target = noise - latents
+
+                    with torch.no_grad():
+                        pe, pam, pp = _encode_hunyuan_prompts(
+                            pipe,
+                            list(prompts),
+                            device,
+                            t_dtype,
+                            config.llama_max_sequence_length,
+                            config.clip_pooler_prompt,
+                        )
+                    guidance = torch.full((b,), guidance_scale * 1000.0, device=device, dtype=t_dtype)
+
+                    pred = _hunyuan_transformer_forward(
+                        transformer,
+                        noisy,
+                        t_model,
+                        pe,
+                        pam,
+                        pp,
+                        guidance,
+                    )
+                    loss = torch.nn.functional.mse_loss(pred, target)
+                raw_loss = loss.item()
+
+                loss = loss / config.gradient_accumulation_steps
+                loss.backward()
+
+                if (batch_idx + 1) % config.gradient_accumulation_steps == 0:
+                    torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
+
+                epoch_loss_sum += raw_loss
+                epoch_step_count += 1
+                global_step += 1
+
+                if train_pbar is not None:
+                    train_pbar.update(1)
+                    train_pbar.set_postfix(loss=f"{raw_loss:.4f}", ep=epoch, refresh=False)
+
+                if global_step % config.logging_steps == 0:
+                    avg_loss = epoch_loss_sum / epoch_step_count
+                    elapsed = time.time() - train_start
+                    current_lr = optimizer.param_groups[0]["lr"]
+                    entry = {
+                        "step": global_step,
+                        "epoch": epoch,
+                        "loss": round(avg_loss, 6),
+                        "lr": current_lr,
+                        "elapsed_sec": round(elapsed, 1),
+                    }
+                    step_log.append(entry)
+                    logger.info(
+                        "Step %d | epoch %d | loss=%.6f | lr=%.2e | elapsed=%.0fs",
+                        global_step, epoch, avg_loss, current_lr, elapsed,
+                    )
+                    with step_csv_path.open("a", newline="", encoding="utf-8") as f:
+                        csv.writer(f).writerow([
+                            global_step, epoch, round(avg_loss, 6), current_lr, round(elapsed, 1),
+                        ])
+
+                if global_step % config.save_steps == 0:
+                    ckpt_dir = output_dir / f"checkpoint-{global_step}"
+                    _save_checkpoint(transformer, ckpt_dir, config)
+
+            epoch_duration = time.time() - epoch_start
+            avg_train_loss = epoch_loss_sum / max(epoch_step_count, 1)
+
+            val_loss = (
+                _run_validation(
+                    transformer,
+                    pipe,
+                    val_loader,
+                    device,
+                    config.mixed_precision,
+                    config.llama_max_sequence_length,
+                    config.clip_pooler_prompt,
+                )
+                if val_loader
+                else None
+            )
+
+            is_best = avg_train_loss < best_loss
+            if is_best:
+                best_loss = avg_train_loss
+                _save_checkpoint(transformer, output_dir / "best_model", config)
+
+            current_lr = optimizer.param_groups[0]["lr"]
+            total_elapsed = time.time() - train_start
+            epoch_entry = {
+                "epoch": epoch,
+                "train_loss": round(avg_train_loss, 6),
+                "val_loss": round(val_loss, 6) if val_loss is not None else None,
+                "best_loss": round(best_loss, 6),
+                "steps_in_epoch": epoch_step_count,
+                "lr": current_lr,
+                "epoch_duration_sec": round(epoch_duration, 1),
+                "total_elapsed_sec": round(total_elapsed, 1),
+                "is_best": is_best,
+            }
+            epoch_log.append(epoch_entry)
+
+            val_str = f"val_loss={val_loss:.6f}" if val_loss is not None else "val_loss=N/A"
+            logger.info(
+                "Epoch %d/%d complete | train_loss=%.6f | %s | best=%.6f | %.0fs",
+                epoch + 1, num_epochs, avg_train_loss, val_str, best_loss, epoch_duration,
+            )
+
+            with epoch_csv_path.open("a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow([
+                    epoch, round(avg_train_loss, 6),
+                    round(val_loss, 6) if val_loss is not None else "",
+                    round(best_loss, 6), epoch_step_count, current_lr,
+                    round(epoch_duration, 1), round(total_elapsed, 1),
+                ])
+
             if global_step >= config.num_train_steps:
                 break
-
-            pixel_values = batch["pixel_values"].to(device)
-
-            noise = torch.randn_like(pixel_values)
-            timesteps = torch.randint(0, 1000, (pixel_values.shape[0],), device=device)
-
-            noisy = pixel_values + noise * (timesteps.float() / 1000.0).view(-1, 1, 1, 1, 1)
-            pred = transformer(noisy, timesteps)
-            if hasattr(pred, "sample"):
-                pred = pred.sample
-
-            loss = torch.nn.functional.mse_loss(pred, noise)
-            raw_loss = loss.item()
-
-            loss = loss / config.gradient_accumulation_steps
-            loss.backward()
-
-            if (batch_idx + 1) % config.gradient_accumulation_steps == 0:
-                torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
-                optimizer.step()
-                optimizer.zero_grad()
-
-            epoch_loss_sum += raw_loss
-            epoch_step_count += 1
-            global_step += 1
-
-            if global_step % config.logging_steps == 0:
-                avg_loss = epoch_loss_sum / epoch_step_count
-                elapsed = time.time() - train_start
-                current_lr = optimizer.param_groups[0]["lr"]
-                entry = {
-                    "step": global_step,
-                    "epoch": epoch,
-                    "loss": round(avg_loss, 6),
-                    "lr": current_lr,
-                    "elapsed_sec": round(elapsed, 1),
-                }
-                step_log.append(entry)
-                logger.info(
-                    "Step %d | epoch %d | loss=%.6f | lr=%.2e | elapsed=%.0fs",
-                    global_step, epoch, avg_loss, current_lr, elapsed,
-                )
-                with step_csv_path.open("a", newline="", encoding="utf-8") as f:
-                    csv.writer(f).writerow([
-                        global_step, epoch, round(avg_loss, 6), current_lr, round(elapsed, 1),
-                    ])
-
-            if global_step % config.save_steps == 0:
-                ckpt_dir = output_dir / f"checkpoint-{global_step}"
-                _save_checkpoint(transformer, ckpt_dir, config)
-
-        epoch_duration = time.time() - epoch_start
-        avg_train_loss = epoch_loss_sum / max(epoch_step_count, 1)
-
-        val_loss = _run_validation(transformer, val_loader, device) if val_loader else None
-
-        is_best = avg_train_loss < best_loss
-        if is_best:
-            best_loss = avg_train_loss
-            _save_checkpoint(transformer, output_dir / "best_model", config)
-
-        current_lr = optimizer.param_groups[0]["lr"]
-        total_elapsed = time.time() - train_start
-        epoch_entry = {
-            "epoch": epoch,
-            "train_loss": round(avg_train_loss, 6),
-            "val_loss": round(val_loss, 6) if val_loss is not None else None,
-            "best_loss": round(best_loss, 6),
-            "steps_in_epoch": epoch_step_count,
-            "lr": current_lr,
-            "epoch_duration_sec": round(epoch_duration, 1),
-            "total_elapsed_sec": round(total_elapsed, 1),
-            "is_best": is_best,
-        }
-        epoch_log.append(epoch_entry)
-
-        val_str = f"val_loss={val_loss:.6f}" if val_loss is not None else "val_loss=N/A"
-        logger.info(
-            "Epoch %d/%d complete | train_loss=%.6f | %s | best=%.6f | %.0fs",
-            epoch + 1, num_epochs, avg_train_loss, val_str, best_loss, epoch_duration,
-        )
-
-        with epoch_csv_path.open("a", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow([
-                epoch, round(avg_train_loss, 6),
-                round(val_loss, 6) if val_loss is not None else "",
-                round(best_loss, 6), epoch_step_count, current_lr,
-                round(epoch_duration, 1), round(total_elapsed, 1),
-            ])
+    finally:
+        if train_pbar is not None:
+            train_pbar.close()
 
     _save_checkpoint(transformer, output_dir / "final_model", config)
 
@@ -637,6 +910,10 @@ def _config_to_dict(config: VideoGenConfig) -> dict[str, Any]:
         "gradient_checkpointing": config.gradient_checkpointing,
         "quantization": config.quantization,
         "mixed_precision": config.mixed_precision,
+        "llama_max_sequence_length": config.llama_max_sequence_length,
+        "clip_pooler_prompt": config.clip_pooler_prompt,
+        "vae_memory_saving": config.vae_memory_saving,
+        "show_training_progress": config.show_training_progress,
         "action_encoding": config.action_encoding,
         "prompt_template": config.prompt_template,
         "joystick_deadzone": config.joystick_deadzone,
