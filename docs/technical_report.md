@@ -1,7 +1,7 @@
 # NitroGen 动作条件游戏视频世界模型适配系统技术报告
 
 > **项目名称：** Nitrogen Game Agent Adaptation  
-> **版本：** v1.1（与当前仓库实现对齐）  
+> **版本：** v1.2（与当前仓库实现对齐，含 v2 离线评估指标）  
 > **日期：** 2026年4月4日  
 > **作者：** *[待填写]*  
 
@@ -37,7 +37,7 @@
 2. **清单构建**：扫描 `SHARD_* / video_id / chunk_id /` 目录，解析 Parquet 与 `metadata.json`，按策略划分 train/val/test，写出 `manifest.json`；  
 3. **模型微调**：加载 `HunyuanVideoPipeline`（默认 `hunyuanvideo-community/HunyuanVideo`），对 Transformer 注入 LoRA，在 NitroGen 片段上做流匹配 MSE 训练；  
 4. **视频生成**：对指定 split 的 chunk 编码动作提示，调用管线生成帧序列并保存 PNG（及可选 MP4）；  
-5. **离线评估**：对比生成序列与参考视频（若可得），计算时序一致性、PSNR、简化 SSIM、LPIPS 等，并写出 JSON 报告。
+5. **离线评估**：在 **`generation_manifest.json`** 中记录 **`source_video_path`**（及按 chunk 在 NitroGen 目录下 **自动解析** 的兜底路径），将参考视频 **resize 至与生成 PNG 相同分辨率** 后，计算时序一致性、参考时序一致性、像素 **MAE**、帧间运动与参考的 **temporal_error_vs_reference**、PSNR、简化 SSIM、LPIPS，并在帧数足够时汇总 **Inception 特征均值 L2** 与 **池化 FID**，写出 **`v2_video_generation_evaluation`** 报告。
 
 实现语言为 **Python 3.12**，配置以 JSON 为主、路径不硬编码在业务逻辑中，数据契约以 `dataclass` 固化在 `src/data/schema.py`。
 
@@ -112,12 +112,13 @@ nitrogen-game-agent-adaptation/
 │   │   ├── config_io.py             # VideoGenConfig / LoRAConfig
 │   │   └── hf_finetune.py           # 数据集、流匹配训练、generate_video
 │   └── eval/
-│       ├── metrics.py               # TC / PSNR / SSIM / LPIPS / FID 辅助
-│       ├── pipeline.py              # 读 generation_manifest，对齐参考视频
-│       └── report.py                # VideoEvalReport 序列化
+│       ├── metrics.py               # TC / MAE / 运动误差 / PSNR / SSIM / LPIPS / Inception+FID
+│       ├── pipeline.py              # 读 manifest、解析参考路径、对齐分辨率、池化特征
+│       └── report.py                # VideoEvalReport 序列化（v2）
 └── tests/
     ├── test_download_data.py
-    └── test_loader_mp4.py
+    ├── test_loader_mp4.py
+    └── test_eval_metrics.py         # 评估指标单元测试
 ```
 
 ### 4.2 数据与模型关系
@@ -144,7 +145,7 @@ flowchart LR
 [2] build_manifest     →  manifest.json（schema_version: v3_nitrogen_manifest）
 [3] run_hunyuanvideo_lora_finetune →  train_log_*.csv, train_metrics.json, checkpoints
 [4] generate_video     →  frame_*.png（+ 可选 mp4）+ generation_manifest.json
-[5] build_evaluation_records + report →  report_<split>.json（v1_video_generation_evaluation）
+[5] build_evaluation_records + report →  report_<split>.json（schema_version: v2_video_generation_evaluation）
 ```
 
 ---
@@ -279,11 +280,11 @@ flowchart LR
 
 ### 8.2 `scripts/predict.py`
 
-遍历 **`NitroGenDataset`**（按 split、`split_granularity`、可选 `max_samples`），对每个 chunk 构建与训练一致的 **`encode_conditioning_prompt`**，调用 **`generate_video`**，将帧写入 **`output/<chunk_id>/frame_*.png`**，并尝试写 **`{chunk_id}.mp4`**。最后写出 **`generation_manifest.json`**，每条含 `chunk_id`, `game`, `prompt`, `frames_dir`, `num_frames`。
+遍历 **`NitroGenDataset`**（按 split、`split_granularity`、可选 `max_samples`），对每个 chunk 构建与训练一致的 **`encode_conditioning_prompt`**，调用 **`generate_video`**，将帧写入 **`output/<chunk_id>/frame_*.png`**，并尝试写 **`{chunk_id}.mp4`**。最后写出 **`generation_manifest.json`**，每条除 `chunk_id`, `game`, `prompt`, `frames_dir`, `num_frames` 外，还包含 **`source_video_path`**（即该 chunk 的 **`VideoChunk.video_path`**，通常为本地 `video.mp4` 绝对路径），供离线评估加载参考帧。
 
 ### 8.3 `main.py` 中的生成
 
-与 `predict` 类似，但 **`GENERATE_MAX_SAMPLES`**（默认 5）限制评估用生成数量；生成条目写入同一 manifest 结构（**当前实现未写入 `source_video_path`**，见第 9 节）。
+与 `predict` 类似，但 **`GENERATE_MAX_SAMPLES`**（默认 5）限制评估用生成数量；生成 manifest 条目同样写入 **`source_video_path`**，与第 9 节评估流水线一致。
 
 ---
 
@@ -291,23 +292,46 @@ flowchart LR
 
 ### 9.1 指标（`src/eval/metrics.py`）
 
-- **时序一致性 `compute_temporal_consistency`**：相邻帧像素绝对差均值，映射为 \([0,1]\)，**越大越平滑**（见实现：`1 - min(mean_diff/255, 1)`）。  
-- **PSNR**：逐帧与参考；全等帧时为 `inf`，聚合时对有限值取平均。  
-- **SSIM**：**简化 luminance 通道** SSIM，非完整 MS-SSIM。  
-- **LPIPS**：`net="alex"`，需 `lpips` + `torch`；缺失则跳过。  
-- **FID / FVD**：文件中提供特征级 FID 与 FVD 相关占位/说明，主报告聚合 **`VideoEvalSummary`** 默认聚焦 TC、LPIPS、PSNR、SSIM。
+**逐视频（`VideoEvalRecord`，写入 `per_video`）**
+
+| 字段 | 含义 |
+|------|------|
+| `temporal_consistency` | 生成序列相邻帧平均绝对差，映射到 \([0,1]\)，越大越平滑（`1 - min(mean_diff/255, 1)`）。 |
+| `reference_temporal_consistency` | 对 **参考** 帧序列使用 **同一公式**，便于与生成侧对比动态平滑度。 |
+| `mean_mae` | 对齐帧上 **逐像素平均 L1**（uint8 RGB），直观反映整体像素偏差。 |
+| `temporal_error_vs_reference` | 相邻帧差分 \(\Delta gen\)、\(\Delta ref\) 的 **平均 L1 \(\|\Delta gen - \Delta ref\|\)**，反映 **运动变化是否与参考一致**（像素域、粗粒度）。 |
+| `psnr_mean` | 对齐帧 PSNR 的均值；全等帧会产生 `inf`，**汇总时剔除 `inf`** 再平均。 |
+| `ssim_mean` | **简化 luminance SSIM** 的帧均值（非 MS-SSIM）。 |
+| `lpips_mean` | **LPIPS（Alex）** 帧均值；需 `lpips` 与 `torch`。 |
+| `fid_per_frame` | 预留字段；当前主线 **不在单条视频上写 FID**。 |
+
+**汇总（`VideoEvalSummary`，写入 `summary`）**
+
+| 字段 | 含义 |
+|------|------|
+| `total_frames_with_reference` | 所有 `per_video` 条目中 **`num_frames_reference` 之和**，用于判断参考对比覆盖度。 |
+| `mean_*` | 上述各逐视频指标在有效条目上的算术平均（`mean_fid` 见下）。 |
+| `inception_feature_mean_l2` | 将全部 **对齐帧** 的 **Inception v3 pool（2048 维）** 特征分别对生成池、参考池求均值，再计算 **\(\lVert \mathbb{E}[f_{gen}] - \mathbb{E}[f_{ref}] \rVert_2\)**；**样本较少时仍可比**，作为分布一阶矩距离。 |
+| `mean_fid` | **池化 Fréchet 距离**：仅当生成侧与参考侧 **池化特征行数均 ≥ `FID_MIN_FRAMES_PER_POOL`（默认 48）** 时计算；协方差加 **对角收缩** 以缓解小样本不稳定。不足阈值时为 `None`。 |
+| `fvd` | 结构中保留；**当前未在流水线中计算**（需 I3D 等更重依赖）。 |
+
+Inception 前处理与常见 pytorch-fid 一致：Resize **299×299**，\((x-128)/128\)。**`torchvision`** 用于加载 **ImageNet 预训练 Inception v3**（首次运行可能下载权重）。
 
 ### 9.2 评估流水线（`src/eval/pipeline.py`）
 
-读取 **`generation_manifest.json`**，对每条有 `frames_dir` 且 `num_frames>0` 的记录加载生成 PNG。若存在 **`source_video_path`** 且文件可读，则用 **decord**（或 OpenCV 回退）按与生成帧数对齐的索引 **采样参考帧**，再调用 **`evaluate_video_pair`**。
-
-**实现说明**：当前 **`scripts/predict.py`** 与 **`main.py`** 写出的 manifest **默认不含 `source_video_path`**，因此 **`build_evaluation_records` 通常只能计算生成侧时序一致性**，PSNR/SSIM/LPIPS 为 `None`。若要在报告或实验中使用全指标，需在 manifest 生成处 **补充 chunk 对应的 `video.mp4` 绝对路径** 字段（与 `VideoChunk.video_path` 一致）。
+- 读取 **`generation_manifest.json`**，对每条有 `frames_dir` 且 `num_frames>0` 的记录加载生成 PNG。  
+- **参考路径**：优先 **`source_video_path`**（若存在且为有效文件）；否则在传入 **`reference_dataset_path`** 时，按 **`SHARD_*/*/chunk_id/video.mp4`** 在 NitroGen 根目录下 **自动查找**。  
+- **空间对齐**：参考帧加载后 **resize 到与生成 PNG 相同的 `(H, W)`**，减轻分辨率不一致带来的假误差。  
+- 调用 **`evaluate_video_pair`** 得到逐条记录；对每条有参考的记录，额外提取 Inception 特征并 **纵向拼接**，供汇总 **`inception_feature_mean_l2`** 与 **`mean_fid`**。  
+- **`build_evaluation_records`** 返回 **`(records, pooled_gen_features, pooled_ref_features)`**；**`build_evaluation_report`** 将后两者传入 **`evaluate_records`**，写入报告。
 
 ### 9.3 报告格式（`src/eval/report.py`）
 
-- **`schema_version`**：`"v1_video_generation_evaluation"`  
-- **`summary`**：`total_videos`, `mean_temporal_consistency`, `mean_lpips`, `mean_psnr`, `mean_ssim`, `mean_fid`, `fvd` 等  
-- **`per_video`**：逐 chunk 指标  
+- **`schema_version`**：`"v2_video_generation_evaluation"`  
+- **`summary`**：含 `total_videos`, `total_frames_with_reference`, `mean_temporal_consistency`, `mean_reference_temporal_consistency`, `mean_mae`, `mean_temporal_error_vs_reference`, `mean_psnr`, `mean_ssim`, `mean_lpips`, `inception_feature_mean_l2`, `mean_fid`, `fvd` 等  
+- **`per_video`**：逐 chunk 的完整 `VideoEvalRecord` 字段（JSON 键与 dataclass 一致）  
+
+**`main.py` 评估阶段日志** 会额外打印 **`mean_mae`、`inception_feature_mean_l2`、`mean_fid`** 等摘要，便于快速扫结果。
 
 ---
 
@@ -329,6 +353,8 @@ flowchart LR
 | `SKIP_DOWNLOAD_IF_PRESENT` / `SKIP_MANIFEST_IF_PRESENT` | `True` | 跳过已存在步骤 |
 
 五阶段顺序：**下载 → 写 manifest → LoRA 微调 → 生成（最多 `GENERATE_MAX_SAMPLES` 段）→ 评估**。
+
+评估阶段：`build_evaluation_records` 解包为 **`records, pooled_gen_f, pooled_ref_f`**，再调用 **`build_evaluation_report(..., pooled_gen_features=..., pooled_ref_features=...)`**，以写入 **v2** 报告中的池化分布指标。
 
 ### 10.2 独立 CLI（与 `AGENTS.md` 一致）
 
@@ -381,16 +407,21 @@ python3.12 -m scripts.predict \
 
 ### 11.3 生成与离线指标（示意）
 
-在 **`GENERATE_MAX_SAMPLES=5`** 的 val 子集上，仅 **时序一致性** 可无条件由当前 manifest 复现；下表 **括号内** 为在 manifest **补充 `source_video_path`** 后的 **推演** 全指标。
+在 **`GENERATE_MAX_SAMPLES=5`**、每条约 **13** 帧、且 **`main.py` 传入 `reference_dataset_path`** 的前提下，manifest 含 **`source_video_path`** 或可通过 NitroGen 目录 **反查 chunk**，则 **PSNR / SSIM / LPIPS / MAE / 参考时序 / 运动误差 / inception_feature_mean_l2** 均可有值。**`mean_fid`** 需池化后生成侧与参考侧帧特征 **各不少于 48 帧**（约等于 **4 条 13 帧视频** 的量级）；仅 5 条视频时总帧约 65，通常 **可满足 FID 阈值**，但数值仍受 **小样本协方差估计** 影响，宜作 **相对比较** 而非绝对金标准。
 
 | 指标 | 示意值 | 备注 |
 |------|--------|------|
 | `mean_temporal_consistency` | **0.87** | 生成序列内部平滑度 |
-| `mean_lpips` | **（0.44）** | AlexNet 骨干；低分辨率 + 扩散模糊时常见 >0.3 |
-| `mean_psnr` | **（20.8 dB）** | 与压缩与对齐误差相关 |
-| `mean_ssim` | **（0.56）** | 实现为简化 SSIM，整体低于论文级 MS-SSIM |
+| `mean_reference_temporal_consistency` | **0.89** | 参考序列平滑度（对照） |
+| `mean_mae` | **（9.2）** | 0–255 像素 L1 均值，示意 |
+| `mean_temporal_error_vs_reference` | **（6.5）** | 运动差分与参考的差异，越小越好，示意 |
+| `mean_lpips` | **0.44** | Alex 骨干；低分辨率 + 扩散时常 >0.3 |
+| `mean_psnr` | **20.8 dB** | 与对齐与模糊相关 |
+| `mean_ssim` | **0.56** | 简化 SSIM |
+| `inception_feature_mean_l2` | **（0.82）** | 特征空间均值 L2，示意 |
+| `mean_fid` | **（视池化帧数而定）** | 不足 48 帧/池则为 `None` |
 
-**解读（示意）**：在 **160×288** 下，模型优先学习 **大体布局与运动趋势**；LPIPS 高于静态图像超分任务属预期。时序一致性高并不等价于 **与参考逐帧对齐**，需结合 **PSNR/LPIPS** 或 **人工观感**。
+**解读（示意）**：在 **160×288** 下，应同时看 **像素类（MAE/PSNR）**、**感知类（LPIPS）**、**动态类（TC、temporal_error_vs_reference）** 与 **分布类（inception_feature_mean_l2、FID）**；单一指标易受采样与对齐方式影响。
 
 ### 11.4 与基线的对比讨论（概念性）
 
@@ -409,6 +440,7 @@ python3.12 -m scripts.predict \
 | 包 | 作用 |
 |----|------|
 | `torch>=2.2` | 训练与推理 |
+| `torchvision>=0.17` | Inception 特征与池化 FID 相关评估 |
 | `transformers>=4.41` | 文本编码与部分量化配置 |
 | `diffusers>=0.30` | HunyuanVideoPipeline |
 | `peft>=0.12` | LoRA |
@@ -429,7 +461,7 @@ python3.12 -m scripts.predict \
 
 ### 12.4 测试
 
-仓库含 **`tests/test_download_data.py`**、**`tests/test_loader_mp4.py`** 等，用于下载参数与加载路径的回归；**非完整训练测试**（全模型过大）。
+仓库含 **`tests/test_download_data.py`**、**`tests/test_loader_mp4.py`**、**`tests/test_eval_metrics.py`** 等；其中评估测试覆盖 **MAE、时序误差、记录聚合与池化 FID 阈值逻辑**，**不加载 HunyuanVideo 全模型**（全量训练/推理测试因权重与显存未纳入 CI）。
 
 ---
 
@@ -453,11 +485,12 @@ python3.12 -m scripts.predict \
 |------|------|
 | **文本条件 MVP** | 长序列动作经语言压缩，信息有损；`llama_max_sequence_length` 进一步截断风险 |
 | **向量条件未接训练** | `(T,21)` 已定义，需在 Transformer 侧注入并设计损失权重 |
-| **评估 manifest** | 默认缺少 `source_video_path`，全指标需扩展写出路径 |
+| **池化 FID 与小样本** | `mean_fid` 依赖足够池化帧数；小样本下即使满足阈值，协方差估计仍偏噪，宜配合 **inception_feature_mean_l2** 与感知指标 |
+| **无显式动作对齐指标** | 当前离线指标不直接度量「生成画面是否与手柄语义一致」，需人工或下游检测模型 |
 | **生成未使用训练期 NF4** | `generate_video` 以 bf16 全精度加载管线，与训练内存配置不同 |
 | **单卡与步数** | `num_train_steps` 与数据规模匹配需实验；大模型下收敛速度因任务而异 |
 
-**未来工作**：接入 **向量或混合条件**；改进 **manifest 与评估闭环**；**FVD/I3D** 依赖齐备后的全视频指标；**多 GPU / DeepSpeed**；**课程学习**（分辨率与帧数渐进）；与 **真实游戏环境** 的在线指标（本仓库未包含）。
+**未来工作**：接入 **向量或混合条件**；**FVD / I3D** 等视频级分布指标；**动作一致性**（如预训练视觉问答、事件检测、光流与控制相关性）；**多 GPU / DeepSpeed**；**课程学习**（分辨率与帧数渐进）；与 **真实游戏环境** 的在线指标（本仓库未包含）。
 
 ---
 
@@ -474,15 +507,16 @@ python3.12 -m scripts.predict \
 | `src.model.action_encoder` | `GamepadActionEncoder` | 文本/向量条件 |
 | `src.train.config_io` | `VideoGenConfig`, `LoRAConfig` | 配置 |
 | `src.train.hf_finetune` | `VideoActionDataset`, `run_hunyuanvideo_lora_finetune`, `generate_video` | 训练与推理 |
-| `src.eval.metrics` | `VideoEvalRecord`, `VideoEvalSummary`, `evaluate_video_pair` | 指标 |
-| `src.eval.report` | `VideoEvalReport` | 报告 |
+| `src.eval.metrics` | `VideoEvalRecord`, `VideoEvalSummary`, `evaluate_video_pair`, `evaluate_records`, `extract_inception_features`, `compute_pooled_distribution_metrics` | 指标与池化分布量 |
+| `src.eval.pipeline` | `build_evaluation_records`（返回 records + 池化特征） | 评估数据流 |
+| `src.eval.report` | `VideoEvalReport`, `build_evaluation_report` | 报告 |
 
 ### 附录 B：JSON Schema 版本
 
 | 产物 | `schema_version` |
 |------|------------------|
 | 数据集 manifest | `v3_nitrogen_manifest` |
-| 视频生成评估报告 | `v1_video_generation_evaluation` |
+| 视频生成评估报告 | `v2_video_generation_evaluation` |
 
 ### 附录 C：运行环境
 
@@ -492,4 +526,4 @@ python3.12 -m scripts.predict \
 
 ---
 
-> **文档说明**：第 11 章中的实验数字为 **基于当前默认配置与代码路径推演的示意值**，并非本仓库提交物中的测量结果；其余章节描述与 `main.py`、`configs/finetune.example.json` 及 `src/` 下实现 **逐项对齐**。若实现变更，请同步更新本章参数表与版本号。
+> **文档说明**：第 11 章中的实验数字为 **基于当前默认配置与代码路径推演的示意值**，并非本仓库提交物中的测量结果；其余章节描述与 `main.py`、`configs/finetune.example.json` 及 `src/` 下实现 **逐项对齐**（当前文档版本 **v1.2** 对应 **v2 评估报告与扩展指标**）。若实现变更，请同步更新本章参数表与文首版本号。
