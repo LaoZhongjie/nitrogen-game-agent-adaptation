@@ -74,9 +74,28 @@ python3.12 -m scripts.predict \
 Evaluation is run as part of the full pipeline. Metrics include:
 
 - **Temporal consistency** — smoothness between adjacent generated frames
+- **MAE** — mean absolute pixel error vs reference
 - **PSNR / SSIM** — per-frame quality vs reference (when available)
 - **LPIPS** — perceptual similarity
-- **FVD** — Frechet Video Distance (distribution-level)
+- **Pooled FID** — Inception-based Fréchet distance (distribution-level; requires ≥48 frames)
+- **Inception L2** — feature-space mean L2 between generated and reference pools
+- **Motion alignment** — temporal motion error vs reference frames
+
+### 6. Plot training curves
+
+```bash
+python3.12 -m scripts.plot_training --run-dir outputs/run1
+```
+
+Reads `train_log_steps.csv` and `train_log_epochs.csv` from the run directory and writes publication-quality PNG charts to `outputs/run1/plots/`:
+
+| File | Content |
+|------|---------|
+| `loss_vs_step.png` | Step-level training loss (raw + EMA smoothed) |
+| `loss_vs_epoch.png` | Epoch-level train vs val loss |
+| `lr_vs_step.png` | Learning rate schedule |
+| `epoch_duration.png` | Wall-clock time per epoch |
+| `training_dashboard.png` | All-in-one summary panel |
 
 ## One-shot pipeline
 
@@ -98,13 +117,15 @@ Runs: download -> manifest -> fine-tune -> generate -> evaluate.
 | `src/model/action_encoder.py` | `GamepadActionEncoder` — text and vector action encoding |
 | `src/train/config_io.py` | `VideoGenConfig` — typed config loading |
 | `src/train/hf_finetune.py` | `VideoActionDataset`, LoRA training loop, video generation |
-| `src/eval/metrics.py` | PSNR, SSIM, LPIPS, temporal consistency |
+| `src/data/mp4_validate.py` | Lightweight MP4 integrity check (ISO BMFF / `moov` box) |
+| `src/eval/metrics.py` | PSNR, SSIM, LPIPS, MAE, temporal consistency, motion alignment, pooled FID |
 | `src/eval/pipeline.py` | Join generated + reference videos for evaluation |
 | `src/eval/report.py` | Evaluation report serialization |
 | `scripts/download_data.py` | NitroGen HuggingFace downloader |
 | `scripts/build_dataset.py` | Manifest builder |
 | `scripts/finetune.py` | Fine-tuning CLI |
 | `scripts/predict.py` | Video generation CLI |
+| `scripts/plot_training.py` | Plot training curves from CSV logs |
 | `main.py` | Full pipeline orchestrator |
 | `configs/finetune.example.json` | Fine-tuning config template |
 
