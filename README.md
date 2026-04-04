@@ -10,10 +10,10 @@ The project uses **Python 3.12** and should be run from the repository root.
 python3.12 -m pip install -r requirements.txt
 ```
 
-GPU requirements (LoRA + nf4 quantization):
+GPU requirements (LoRA + NF4 quantization):
 
-- Training: 1x A100 80GB minimum, 2-4x A100 recommended
-- Inference: 1x A100 or RTX 4090 24GB with quantization
+- **Training:** Documented setup is **1× NVIDIA Tesla V100 32GB**. Larger GPUs (e.g. A100 80GB) add headroom for batch size, resolution, and frame count; if you are VRAM-limited, reduce those in the fine-tuning config.
+- **Inference:** ≥24GB VRAM with quantization (e.g. RTX 4090 24GB or A100).
 
 ## Pipeline stages
 
