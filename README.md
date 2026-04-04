@@ -1,6 +1,6 @@
-# NitroGen + HunyuanVideo World Model
+# NitroGen × HunyuanVideo: Action-Conditioned Game World Model
 
-End-to-end pipeline that fine-tunes **HunyuanVideo** (8.3B video generation model) with LoRA on the **NitroGen** gameplay dataset to build an action-conditioned game world model. Given a sequence of gamepad actions, the model generates corresponding gameplay video.
+Fine-tunes **HunyuanVideo** (8.3B DiT) with LoRA on **NitroGen** gameplay data to generate future video frames from gamepad action sequences. Single-GPU training via NF4 quantization + flow matching.
 
 The project uses **Python 3.12** and should be run from the repository root.
 
